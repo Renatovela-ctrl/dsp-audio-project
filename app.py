@@ -3,7 +3,7 @@ import numpy as np
 import plotly.graph_objs as go
 import io
 from scipy.io.wavfile import write
-# Asegúrate de que tu archivo dsp_core.py tenga estas funciones definidas
+# Asegúrate de que tu archivo modules/dsp_core.py existe y está correcto
 from modules.dsp_core import load_audio, change_sampling_rate, apply_equalizer, compute_fft
 
 # --- FUNCIÓN AUXILIAR PARA OPTIMIZAR GRÁFICAS ---
@@ -13,6 +13,7 @@ def downsample_for_plotting(data, max_points=10000):
     Esto evita que el navegador colapse al graficar millones de puntos.
     """
     n = len(data)
+    if n == 0: return np.array([]) # Manejo de array vacío
     if n > max_points:
         step = n // max_points
         return data[::step]
@@ -71,37 +72,45 @@ if uploaded_file is not None:
     with tab1:
         st.subheader("Comparación en el Tiempo")
         
-        # Graficamos un tramo representativo para optimizar
+        # Graficamos un tramo representativo
         limit_view = min(len(original_data), 100000)
         
         fig_time = go.Figure()
         
-        # Usamos la función auxiliar para reducir puntos
         y_orig_plot = downsample_for_plotting(original_data[:limit_view])
         y_proc_plot = downsample_for_plotting(processed_data[:limit_view])
         
         # Eje de tiempo aproximado
-        x_axis = np.linspace(0, limit_view/new_fs, len(y_proc_plot))
-        
-        fig_time.add_trace(go.Scatter(x=x_axis, y=y_orig_plot, name="Original", opacity=0.5))
-        fig_time.add_trace(go.Scatter(x=x_axis, y=y_proc_plot, name="Procesada"))
-        
-        fig_time.update_layout(title="Forma de onda (Tramo inicial reducido)", xaxis_title="Tiempo (s)", yaxis_title="Amplitud")
-        st.plotly_chart(fig_time, use_container_width=True)
+        if len(y_proc_plot) > 0:
+            x_axis = np.linspace(0, limit_view/new_fs, len(y_proc_plot))
+            
+            fig_time.add_trace(go.Scatter(x=x_axis, y=y_orig_plot, name="Original", opacity=0.5))
+            fig_time.add_trace(go.Scatter(x=x_axis, y=y_proc_plot, name="Procesada"))
+            
+            fig_time.update_layout(title="Forma de onda (Tramo inicial reducido)", xaxis_title="Tiempo (s)", yaxis_title="Amplitud")
+            # Corrección de Warning: use_container_width es True por defecto en versiones nuevas,
+            # pero usamos el argumento explícito compatible.
+            st.plotly_chart(fig_time, use_container_width=True)
 
-        # REPRODUCTOR DE AUDIO CORREGIDO
+        # REPRODUCTOR DE AUDIO BLINDADO (AQUÍ ESTABA EL ERROR)
         st.markdown("### 🎧 Escuchar Resultado")
         
-        # Normalizar
-        max_val = np.max(np.abs(processed_data))
-        if max_val > 0:
-            audio_normalized = processed_data / max_val
-        else:
-            audio_normalized = processed_data
+        # 1. Limpieza de NaNs (Not a Number) y Infs (Infinitos)
+        audio_safe = np.nan_to_num(processed_data)
         
-        # Convertir a Bytes (WAV virtual)
+        # 2. Normalización segura
+        max_val = np.max(np.abs(audio_safe))
+        if max_val > 0:
+            audio_safe = audio_safe / max_val
+        
+        # 3. CLIPPING DURO: Asegurar que nada salga del rango [-1.0, 1.0]
+        # Esto elimina el error "overflow encountered in multiply"
+        audio_safe = np.clip(audio_safe, -1.0, 1.0)
+        
+        # 4. Conversión a Enteros de 16-bits
+        # Ahora es seguro multiplicar porque garantizamos rango [-1, 1]
         virtual_file = io.BytesIO()
-        wav_data = (audio_normalized * 32767).astype(np.int16)
+        wav_data = (audio_safe * 32767).astype(np.int16)
         write(virtual_file, new_fs, wav_data)
         
         st.audio(virtual_file, format='audio/wav')
@@ -114,8 +123,7 @@ if uploaded_file is not None:
         freq_in, mag_in = compute_fft(original_data, original_fs)
         freq_out, mag_out = compute_fft(processed_data, new_fs)
         
-        # Optimizar puntos para la gráfica (Evita el error de JSON String Length)
-        # Usamos max 5000 puntos para dibujar la curva
+        # Optimizar puntos
         f_in_plot = downsample_for_plotting(freq_in, 5000)
         m_in_plot = downsample_for_plotting(mag_in, 5000)
         
