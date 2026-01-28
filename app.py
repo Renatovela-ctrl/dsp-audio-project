@@ -148,6 +148,5 @@ with tab2:
             title="Comparación Espectral (Visualización Optimizada)"
         )
         st.plotly_chart(fig_freq, use_container_width=True)
-
 else:
     st.info("👋 Sube un archivo .wav en la barra lateral para comenzar.")
