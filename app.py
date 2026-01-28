@@ -3,134 +3,125 @@ import numpy as np
 import plotly.graph_objs as go
 import io
 from scipy.io.wavfile import write
-# Asegúrate de que tu archivo modules/dsp_core.py esté actualizado con la versión "blindada"
 from modules.dsp_core import load_audio, change_sampling_rate, apply_equalizer, compute_fft
 
-# --- FUNCIÓN AUXILIAR PARA OPTIMIZAR GRÁFICAS ---
-def downsample_for_plotting(data, max_points=10000):
-    n = len(data)
-    if n == 0: return np.array([])
-    if n > max_points:
-        step = n // max_points
+# --- CONFIGURACIÓN INICIAL ---
+st.set_page_config(page_title="DSP Audio Lab", layout="wide", page_icon="🎛️")
+
+# Estilos CSS para ocultar warnings molestos
+st.markdown("""
+    <style>
+    .stAlert { display: none; }
+    </style>
+    """, unsafe_allow_html=True)
+
+# --- CACHÉ PARA PROCESOS PESADOS ---
+# Esto evita recalcular el resampling si solo cambias de pestaña
+@st.cache_data
+def cached_resampling(data, fs, m, l):
+    return change_sampling_rate(data, fs, m, l)
+
+def downsample_visuals(data, max_points=5000):
+    """Reduce puntos para gráficas rápidas"""
+    if len(data) > max_points:
+        step = len(data) // max_points
         return data[::step]
     return data
 
-# --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="DSP Audio Lab", layout="wide", page_icon="🎛️")
+# --- INTERFAZ ---
+st.title("🎛️ DSP: Conversor de Tasa y Ecualizador")
+st.markdown("**Equipo:** Renato Vela, Israel Méndez, Daniel Molina")
 
-st.title("🎛️ Sistema de Procesamiento de Señales de Audio (T3)")
-st.markdown("**Integrantes:** Renato Vela, Israel Méndez, Daniel Molina")
+# --- SIDEBAR ---
+st.sidebar.header("1. Entrada")
+uploaded_file = st.sidebar.file_uploader("Archivo WAV", type=["wav"])
 
-# --- BARRA LATERAL (CONTROLES) ---
-st.sidebar.header("1. Carga de Señal")
-uploaded_file = st.sidebar.file_uploader("Sube un archivo WAV", type=["wav"])
-
-if uploaded_file is not None:
-    # 1. Cargar audio
+if uploaded_file:
+    # Carga Robustecida
     original_data, original_fs = load_audio(uploaded_file)
     st.sidebar.success(f"Fs Original: {original_fs} Hz")
 
-    # --- SECCIÓN 2: CONVERSIÓN DE TASA ---
     st.sidebar.markdown("---")
-    st.sidebar.header("2. Conversión de Tasa")
-    
+    st.sidebar.header("2. Resampling")
     col1, col2 = st.sidebar.columns(2)
-    L = col1.number_input("Factor L (Expansión)", min_value=1, value=1, step=1)
-    M = col2.number_input("Factor M (Decimación)", min_value=1, value=1, step=1)
+    L = col1.number_input("Expansión (L)", 1, 10, 1)
+    M = col2.number_input("Decimación (M)", 1, 10, 1)
 
-    # --- SECCIÓN 3: ECUALIZADOR ---
     st.sidebar.markdown("---")
-    st.sidebar.header("3. Ecualizador")
-    
-    gains = {}
-    gains["Sub-Bass"] = st.sidebar.slider("Sub-Bass (16-60Hz)", -20, 20, 0)
-    gains["Bass"] = st.sidebar.slider("Bass (60-250Hz)", -20, 20, 0)
-    gains["Low Mids"] = st.sidebar.slider("Low Mids (250-2k)", -20, 20, 0)
-    gains["High Mids"] = st.sidebar.slider("High Mids (2k-4k)", -20, 20, 0)
-    gains["Presence"] = st.sidebar.slider("Presence (4k-6k)", -20, 20, 0)
-    gains["Brilliance"] = st.sidebar.slider("Brilliance (6k-16k)", -20, 20, 0)
+    st.sidebar.header("3. Ecualizador (dB)")
+    gains = {
+        "Sub-Bass": st.sidebar.slider("16-60Hz", -12, 12, 0),
+        "Bass": st.sidebar.slider("60-250Hz", -12, 12, 0),
+        "Low Mids": st.sidebar.slider("250-2k", -12, 12, 0),
+        "High Mids": st.sidebar.slider("2k-4k", -12, 12, 0),
+        "Presence": st.sidebar.slider("4k-6k", -12, 12, 0),
+        "Brilliance": st.sidebar.slider("6k-16k", -12, 12, 0),
+    }
 
     # --- PROCESAMIENTO ---
-    resampled_data, new_fs = change_sampling_rate(original_data, original_fs, M, L)
-    st.write(f"### Frecuencia de Muestreo Resultante: **{new_fs} Hz**")
+    # 1. Resampling (Con Caché)
+    resampled_data, new_fs = cached_resampling(original_data, original_fs, M, L)
     
+    st.metric("Nueva Frecuencia de Muestreo", f"{new_fs} Hz")
+
+    # 2. Ecualización (En tiempo real)
     processed_data = apply_equalizer(resampled_data, new_fs, gains)
 
-    # --- VISUALIZACIÓN ---
-    tab1, tab2 = st.tabs(["⏱️ Dominio del Tiempo", "🌊 Dominio de la Frecuencia"])
+    # --- SALIDAS VISUALES ---
+    tab_t, tab_f = st.tabs(["⏱️ Tiempo", "🌊 Frecuencia"])
 
-    with tab1:
-        st.subheader("Comparación en el Tiempo")
+    with tab_t:
+        # Gráfica optimizada
+        limit = min(len(original_data), 100000) # Ver solo primeros segundos
         
-        limit_view = min(len(original_data), 100000)
+        fig = go.Figure()
         
-        fig_time = go.Figure()
-        y_orig_plot = downsample_for_plotting(original_data[:limit_view])
-        y_proc_plot = downsample_for_plotting(processed_data[:limit_view])
+        # Ejes de tiempo correctos
+        t_orig = np.linspace(0, limit/original_fs, num=len(downsample_visuals(original_data[:limit])))
+        t_proc = np.linspace(0, limit/original_fs, num=len(downsample_visuals(processed_data[:limit])))
         
-        if len(y_proc_plot) > 0:
-            x_axis = np.linspace(0, limit_view/new_fs, len(y_proc_plot))
-            fig_time.add_trace(go.Scatter(x=x_axis, y=y_orig_plot, name="Original", opacity=0.5))
-            fig_time.add_trace(go.Scatter(x=x_axis, y=y_proc_plot, name="Procesada"))
-            fig_time.update_layout(title="Forma de onda", xaxis_title="Tiempo (s)", yaxis_title="Amplitud")
+        fig.add_trace(go.Scatter(y=downsample_visuals(original_data[:limit]), x=t_orig, name="Original", opacity=0.5))
+        fig.add_trace(go.Scatter(y=downsample_visuals(processed_data[:limit]), x=t_proc, name="Procesada"))
+        fig.update_layout(title="Comparativa Temporal", margin=dict(l=0, r=0, t=30, b=0))
+        st.plotly_chart(fig, use_container_width=True)
+
+        # --- REPRODUCTOR DE AUDIO (FIX DEFINITIVO) ---
+        st.markdown("### 🎧 Resultado")
+        
+        # 1. Limpieza matemática (Quitar NaNs/Infs)
+        audio_final = np.nan_to_num(processed_data)
+        
+        # 2. Normalización segura (Evitar volumen bajo o saturado)
+        max_amp = np.max(np.abs(audio_final))
+        if max_amp > 0:
+            audio_final = audio_final / max_amp
             
-            # CORRECCIÓN DE WARNING: Reemplazamos use_container_width por el nuevo estándar
-            try:
-                st.plotly_chart(fig_time, key="time_plot", use_container_width=True) 
-                # Nota: Si sigue saliendo el warning amarillo, ignóralo, es cosa de Streamlit actualizándose.
-                # Lo importante es que funcione.
-            except:
-                st.plotly_chart(fig_time)
+        # 3. Clipping estricto (Evita el error 'overflow encountered in multiply')
+        audio_final = np.clip(audio_final, -1.0, 1.0)
+        
+        # 4. Conversión y Escritura
+        virtual_wav = io.BytesIO()
+        # Multiplicamos por 32760 (un poco menos de 32767 por seguridad)
+        int_data = (audio_final * 32760).astype(np.int16)
+        write(virtual_wav, new_fs, int_data)
+        
+        # 5. EL REBOBINADO CRÍTICO
+        virtual_wav.seek(0)
+        
+        st.audio(virtual_wav, format='audio/wav')
 
-        # --- AQUÍ ESTABA EL PROBLEMA DEL AUDIO ---
-        st.markdown("### 🎧 Escuchar Resultado")
+    with tab_f:
+        # FFT
+        f_in, mag_in = compute_fft(original_data, original_fs)
+        f_out, mag_out = compute_fft(processed_data, new_fs)
         
-        # 1. Limpieza y Clipping
-        audio_safe = np.nan_to_num(processed_data)
-        max_val = np.max(np.abs(audio_safe))
-        if max_val > 0:
-            audio_safe = audio_safe / max_val
+        fig_fft = go.Figure()
+        # Usamos decibelios logarítmicos
+        fig_fft.add_trace(go.Scatter(x=downsample_visuals(f_in), y=downsample_visuals(20*np.log10(mag_in+1e-9)), name="Entrada"))
+        fig_fft.add_trace(go.Scatter(x=downsample_visuals(f_out), y=downsample_visuals(20*np.log10(mag_out+1e-9)), name="Salida"))
         
-        audio_safe = np.clip(audio_safe, -1.0, 1.0)
-        
-        # 2. Generación del Archivo
-        virtual_file = io.BytesIO()
-        wav_data = (audio_safe * 32767).astype(np.int16)
-        write(virtual_file, new_fs, wav_data)
-        
-        # 3. REBOBINADO MÁGICO (ESTO FALTABA)
-        virtual_file.seek(0)
-        
-        st.audio(virtual_file, format='audio/wav')
-
-    with tab2:
-        st.subheader("Espectro de Frecuencia (FFT)")
-        
-        freq_in, mag_in = compute_fft(original_data, original_fs)
-        freq_out, mag_out = compute_fft(processed_data, new_fs)
-        
-        f_in_plot = downsample_for_plotting(freq_in, 5000)
-        m_in_plot = downsample_for_plotting(mag_in, 5000)
-        f_out_plot = downsample_for_plotting(freq_out, 5000)
-        m_out_plot = downsample_for_plotting(mag_out, 5000)
-
-        fig_freq = go.Figure()
-        db_in = 20 * np.log10(m_in_plot + 1e-10)
-        db_out = 20 * np.log10(m_out_plot + 1e-10)
-
-        fig_freq.add_trace(go.Scatter(x=f_in_plot, y=db_in, name="Entrada Original"))
-        fig_freq.add_trace(go.Scatter(x=f_out_plot, y=db_out, name="Salida Procesada", line=dict(color='orange')))
-        
-        fig_freq.update_layout(
-            xaxis_title="Frecuencia (Hz)", 
-            yaxis_title="Magnitud (dB)", 
-            xaxis_type="log", 
-            title="Comparación Espectral"
-        )
-        try:
-            st.plotly_chart(fig_freq, key="freq_plot", use_container_width=True)
-        except:
-             st.plotly_chart(fig_freq)
+        fig_fft.update_layout(xaxis_type="log", title="Espectro de Magnitud (dB)", yaxis_title="dB", margin=dict(l=0, r=0, t=30, b=0))
+        st.plotly_chart(fig_fft, use_container_width=True)
 
 else:
-    st.info("👋 Sube un archivo .wav para comenzar.")
+    st.info("Sube un archivo WAV para comenzar el análisis.")
