@@ -1,7 +1,21 @@
 import streamlit as st
 import numpy as np
 import plotly.graph_objs as go
+import io
+from scipy.io.wavfile import write
 from modules.dsp_core import load_audio, change_sampling_rate, apply_equalizer, compute_fft
+
+# --- FUNCIÓN AUXILIAR PARA NO MATAR AL NAVEGADOR ---
+def downsample_for_plotting(data, max_points=10000):
+    """
+    Si hay más de 'max_points', toma muestras equiespaciadas.
+    Esto reduce el peso del JSON y evita el RangeError.
+    """
+    n = len(data)
+    if n > max_points:
+        step = n // max_points
+        return data[::step] # Slicing de Python: toma 1 de cada 'step'
+    return data
 
 # Configuración de página
 st.set_page_config(page_title="DSP Audio Lab", layout="wide", page_icon="🎛️")
@@ -60,43 +74,78 @@ if uploaded_file is not None:
     # Pestañas para organizar la vista
     tab1, tab2 = st.tabs(["⏱️ Dominio del Tiempo", "🌊 Dominio de la Frecuencia"])
 
-    with tab1:
+with tab1:
         st.subheader("Comparación en el Tiempo")
-        # Graficar solo un fragmento para no saturar el navegador (ej. primeros 1000 muestras)
-        # o usar WebGL si son muchos datos.
+        
+        # --- OPTIMIZACIÓN VISUAL ---
+        # Graficamos un tramo representativo (ej. 1 segundo o 50k muestras) 
+        # para ver la forma de onda, no toda la canción.
+        limit_view = min(len(original_data), 100000) # Máximo 100k muestras para ver
         
         fig_time = go.Figure()
-        # Eje de tiempo
-        t_axis = np.arange(len(processed_data)) / new_fs
+        # Reducimos puntos para graficar (Downsampling VISUAL)
+        y_orig_plot = downsample_for_plotting(original_data[:limit_view])
+        y_proc_plot = downsample_for_plotting(processed_data[:limit_view])
         
-        fig_time.add_trace(go.Scatter(y=original_data[:2000], name="Original", opacity=0.5))
-        fig_time.add_trace(go.Scatter(y=processed_data[:2000], name="Procesada (Resampled + EQ)"))
+        # Eje de tiempo aproximado
+        x_axis = np.linspace(0, limit_view/new_fs, len(y_proc_plot))
         
-        fig_time.update_layout(xaxis_title="Muestras (n)", yaxis_title="Amplitud", title="Primeras 2000 muestras")
+        fig_time.add_trace(go.Scatter(x=x_axis, y=y_orig_plot, name="Original", opacity=0.5))
+        fig_time.add_trace(go.Scatter(x=x_axis, y=y_proc_plot, name="Procesada"))
+        
+        fig_time.update_layout(title="Forma de onda (Tramo inicial reducido)", xaxis_title="Tiempo (s)", yaxis_title="Amplitud")
         st.plotly_chart(fig_time, use_container_width=True)
 
-        # Reproductor de Audio (Resultado Final)
+        # --- ARREGLO DEL REPRODUCTOR DE AUDIO ---
         st.markdown("### 🎧 Escuchar Resultado")
-        # Normalizar para evitar clipping al reproducir
-        audio_to_play = processed_data / np.max(np.abs(processed_data))
-        st.audio(audio_to_play, sample_rate=new_fs)
+        
+        # 1. Normalizar para evitar estática o silencio (Clipping)
+        # Convertimos a float32 y aseguramos rango [-1, 1]
+        audio_normalized = processed_data / np.max(np.abs(processed_data))
+        
+        # 2. Convertir a Bytes (Archivo WAV virtual)
+        # Esto engaña al navegador para que crea que cargó un archivo real
+        virtual_file = io.BytesIO()
+        # Convertir a formato PCM de 16 bits (estándar de audio)
+        wav_data = (audio_normalized * 32767).astype(np.int16)
+        write(virtual_file, new_fs, wav_data)
+        
+        # 3. Reproducir desde el buffer
+        st.audio(virtual_file, format='audio/wav')
 
-    with tab2:
+with tab2:
         st.subheader("Espectro de Frecuencia (FFT)")
         
-        # Calcular FFT
+        # Calcular FFT (Esto genera millones de puntos)
         freq_in, mag_in = compute_fft(original_data, original_fs)
         freq_out, mag_out = compute_fft(processed_data, new_fs)
         
+        # --- SOLUCIÓN AL CRASH ---
+        # Solo graficamos hasta Nyquist y reducimos la resolución visual
+        # Usamos slicing [::100] o similar. 
+        # Ojo: En log-log a veces perdemos detalle, pero para ver la envolvente basta.
+        
+        # Tomamos máximo 5000 puntos para la gráfica
+        f_in_plot = downsample_for_plotting(freq_in, 5000)
+        m_in_plot = downsample_for_plotting(mag_in, 5000)
+        
+        f_out_plot = downsample_for_plotting(freq_out, 5000)
+        m_out_plot = downsample_for_plotting(mag_out, 5000)
+
         fig_freq = go.Figure()
-        fig_freq.add_trace(go.Scatter(x=freq_in, y=20*np.log10(mag_in+1e-10), name="Entrada Original"))
-        fig_freq.add_trace(go.Scatter(x=freq_out, y=20*np.log10(mag_out+1e-10), name="Salida Procesada", line=dict(color='orange')))
+        
+        # Convertimos a dB y evitamos log(0)
+        db_in = 20 * np.log10(m_in_plot + 1e-10)
+        db_out = 20 * np.log10(m_out_plot + 1e-10)
+
+        fig_freq.add_trace(go.Scatter(x=f_in_plot, y=db_in, name="Entrada Original"))
+        fig_freq.add_trace(go.Scatter(x=f_out_plot, y=db_out, name="Salida Procesada", line=dict(color='orange')))
         
         fig_freq.update_layout(
             xaxis_title="Frecuencia (Hz)", 
             yaxis_title="Magnitud (dB)", 
-            xaxis_type="log", # Escala logarítmica es mejor para audio
-            title="Comparación Espectral"
+            xaxis_type="log", 
+            title="Comparación Espectral (Visualización Optimizada)"
         )
         st.plotly_chart(fig_freq, use_container_width=True)
 
