@@ -3,191 +3,168 @@ import numpy as np
 import plotly.graph_objs as go
 import io
 import os
-import gc # <--- NUEVO: Garbage Collector para liberar RAM
+import gc
 from scipy.io.wavfile import write
 from modules.dsp_core import load_audio, change_sampling_rate, apply_equalizer, compute_fft
 
-# --- CONFIGURACIÓN INICIAL ---
+# --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="DSP Audio Lab", layout="wide", page_icon="🎛️")
 
-# Estilos CSS para ocultar elementos molestos y warnings
 st.markdown("""
     <style>
     .stAlert { display: none; }
-    .main .block-container { padding-top: 2rem; }
+    .main .block-container { padding-top: 1rem; }
+    /* Ajuste para que los sliders sean más compactos */
+    .stSlider { padding-bottom: 0rem; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- CACHÉ INTELIGENTE ---
+# --- FUNCIONES CACHÉ ---
 @st.cache_data(show_spinner=False)
 def cached_resampling(data, fs, m, l):
-    # Esta función consume mucha RAM, el caché evita recalcular si no cambias M o L
     return change_sampling_rate(data, fs, m, l)
 
-def downsample_visuals(data, max_points=3000): # <--- OPTIMIZACIÓN: Bajamos a 3000 puntos
-    """
-    Reduce drásticamente los puntos para graficar.
-    3000 puntos son suficientes para el ojo humano en una pantalla 4K.
-    """
+def downsample_visuals(data, max_points=2000):
     if len(data) > max_points:
         step = len(data) // max_points
         return data[::step]
     return data
 
-# --- INTERFAZ ---
-st.title("🎛️ DSP: Conversor de Tasa y Ecualizador")
-st.markdown("**Equipo:** Renato Vela, Israel Méndez, Daniel Molina")
+# --- TÍTULO ---
+st.title("🎛️ DSP: Laboratorio de Audio en Tiempo Real")
 
-# --- SIDEBAR ---
-st.sidebar.header("1. Entrada de Audio")
-input_mode = st.sidebar.radio("Fuente:", ["📂 Subir Archivo", "🎵 Usar Ejemplo"])
+# --- BARRA LATERAL ---
+st.sidebar.header("1. Fuente")
+input_mode = st.sidebar.radio("Origen:", ["📂 Subir", "🎵 Ejemplo"], horizontal=True)
 
 input_data = None 
-
-if input_mode == "📂 Subir Archivo":
-    uploaded_file = st.sidebar.file_uploader("Sube un archivo WAV", type=["wav"])
-    if uploaded_file is not None:
-        input_data = uploaded_file
+if input_mode == "📂 Subir":
+    uploaded_file = st.sidebar.file_uploader("Archivo WAV", type=["wav"])
+    if uploaded_file: input_data = uploaded_file
 else:
     examples_dir = "examples"
     if os.path.exists(examples_dir):
         files = [f for f in os.listdir(examples_dir) if f.endswith('.wav')]
         if files:
-            selected_file = st.sidebar.selectbox("Elige un audio:", files)
-            input_data = os.path.join(examples_dir, selected_file)
+            selected = st.sidebar.selectbox("Track:", files)
+            input_data = os.path.join(examples_dir, selected)
 
-# --- LÓGICA PRINCIPAL CON GESTIÓN DE MEMORIA ---
 if input_data is not None:
-    # Carga
-    original_data, original_fs = load_audio(input_data)
+    # Carga Inicial
+    full_data, fs = load_audio(input_data)
     
-    # Mostrar info básica sin saturar
-    st.sidebar.success(f"Fs: {original_fs} Hz | Duración: {len(original_data)/original_fs:.2f}s")
-
+    # --- CONTROL MAESTRO DE RENDIMIENTO ---
     st.sidebar.markdown("---")
-    st.sidebar.header("2. Resampling")
-    col1, col2 = st.sidebar.columns(2)
-    # Usamos keys únicas para evitar conflictos de estado
-    L = col1.number_input("Expansión (L)", 1, 10, 1, key="L_val")
-    M = col2.number_input("Decimación (M)", 1, 10, 1, key="M_val")
-
-    st.sidebar.markdown("---")
-    st.sidebar.header("3. Ecualizador (dB)")
+    st.sidebar.header("🚀 Rendimiento")
     
-    # Formulario para evitar recálculos en cada milímetro de movimiento (OPCIONAL)
-    # Por ahora lo dejamos directo, pero si sigue lento, podemos meter esto en un st.form
-    gains = {
-        "Sub-Bass": st.sidebar.slider("16-60Hz", -12, 12, 0),
-        "Bass": st.sidebar.slider("60-250Hz", -12, 12, 0),
-        "Low Mids": st.sidebar.slider("250-2k", -12, 12, 0),
-        "High Mids": st.sidebar.slider("2k-4k", -12, 12, 0),
-        "Presence": st.sidebar.slider("4k-6k", -12, 12, 0),
-        "Brilliance": st.sidebar.slider("6k-16k", -12, 12, 0),
-    }
+    # ESTO ES LO QUE EVITA EL CRASH
+    use_loop = st.sidebar.toggle("⚡ Modo Rápido (Loop 10s)", value=True, help="Procesa solo 10 segundos para ajuste en tiempo real sin colgar la memoria.")
+    
+    # Lógica de recorte (Slicing)
+    if use_loop:
+        # Tomar solo 10 segundos (o menos si el audio es corto)
+        samples_10s = 10 * fs
+        if len(full_data) > samples_10s:
+            # Tomamos un tramo central interesante, no solo el inicio (ej. del segundo 10 al 20)
+            start_sec = 0
+            if len(full_data) > 20 * fs: start_sec = 10 * fs # Empezar en seg 10 si es larga
+            working_data = full_data[start_sec : start_sec + samples_10s]
+            st.sidebar.info("⚡ Modo Loop Activo: Editando tramo de 10s")
+        else:
+            working_data = full_data
+    else:
+        working_data = full_data
+        st.sidebar.warning("⚠️ Modo Completo: El procesamiento será más lento.")
 
-    # --- PROCESAMIENTO ---
+    # --- CONTROLES DSP ---
+    st.sidebar.markdown("---")
+    col_l, col_m = st.sidebar.columns(2)
+    L = col_l.number_input("Upsampling (L)", 1, 8, 1)
+    M = col_m.number_input("Downsampling (M)", 1, 8, 1)
+
+    st.sidebar.subheader("Ecualizador")
+    # Usamos columnas para los sliders para ahorrar espacio y ver todo junto
+    c1, c2, c3 = st.sidebar.columns(3)
+    g_sb = c1.slider("Sub", -12, 12, 0)
+    g_bs = c2.slider("Bass", -12, 12, 0)
+    g_lm = c3.slider("LowMid", -12, 12, 0)
+    
+    c4, c5, c6 = st.sidebar.columns(3)
+    g_hm = c4.slider("HiMid", -12, 12, 0)
+    g_pr = c5.slider("Pres", -12, 12, 0)
+    g_br = c6.slider("Brill", -12, 12, 0)
+    
+    gains = {"Sub-Bass": g_sb, "Bass": g_bs, "Low Mids": g_lm, 
+             "High Mids": g_hm, "Presence": g_pr, "Brilliance": g_br}
+
+    # --- MOTOR DSP ---
     # 1. Resampling
-    resampled_data, new_fs = cached_resampling(original_data, original_fs, M, L)
+    # Solo cacheamos si NO estamos en modo loop (porque el modo loop es rápido de por sí)
+    if use_loop:
+        resampled, new_fs = change_sampling_rate(working_data, fs, M, L)
+    else:
+        resampled, new_fs = cached_resampling(working_data, fs, M, L)
     
-    # 2. Ecualización
-    processed_data = apply_equalizer(resampled_data, new_fs, gains)
+    # 2. EQ
+    processed = apply_equalizer(resampled, new_fs, gains)
 
-    # --- VISUALIZACIÓN LIGERA ---
-    st.divider()
-    
-    # Layout en columnas para aprovechar espacio
-    col_graph, col_controls = st.columns([3, 1])
-    
-    with col_graph:
-        tab_t, tab_f = st.tabs(["⏱️ Tiempo", "🌊 Frecuencia"])
+    # --- VISUALIZACIÓN ---
+    col_main, col_side = st.columns([3, 1])
 
-        with tab_t:
-            # Límite visual: Solo graficar los primeros 5 segundos o 100k muestras
-            # Esto evita que el navegador explote con canciones largas
-            limit = min(len(original_data), 200000)
+    with col_main:
+        tab1, tab2 = st.tabs(["📊 Señal en Tiempo", "🌊 Espectro (FFT)"])
+        
+        with tab1:
+            # Gráfica ultraligera
+            fig_t = go.Figure()
+            # Mostramos max 2000 puntos para velocidad extrema
+            v_orig = downsample_visuals(working_data, 2000)
+            v_proc = downsample_visuals(processed, 2000)
             
-            fig = go.Figure()
+            t_axis = np.linspace(0, len(v_orig)/fs, len(v_orig)) # Tiempo relativo
             
-            # Datos reducidos para visualización
-            vis_orig = downsample_visuals(original_data[:limit])
-            vis_proc = downsample_visuals(processed_data[:limit])
-            
-            # Ejes de tiempo aproximados
-            t_orig = np.linspace(0, limit/original_fs, num=len(vis_orig))
-            t_proc = np.linspace(0, limit/original_fs, num=len(vis_proc))
-            
-            fig.add_trace(go.Scatter(y=vis_orig, x=t_orig, name="Original", opacity=0.5))
-            fig.add_trace(go.Scatter(y=vis_proc, x=t_proc, name="Procesada"))
-            
-            fig.update_layout(
-                title="Comparativa Temporal (Zoom primeros segs)", 
-                margin=dict(l=0, r=0, t=30, b=0),
-                height=350,
-                legend=dict(orientation="h", y=1, x=0)
-            )
-            # CORRECCIÓN DE WARNING: Usamos el parámetro moderno si está disponible
-            try:
-                st.plotly_chart(fig, use_container_width=True)
-            except TypeError:
-                st.plotly_chart(fig) 
+            fig_t.add_trace(go.Scatter(y=v_orig, x=t_axis, name="Original", opacity=0.4))
+            fig_t.add_trace(go.Scatter(y=v_proc, x=t_axis, name="Procesada"))
+            fig_t.update_layout(height=300, margin=dict(t=20, b=20, l=20, r=20), legend=dict(y=1, x=1))
+            st.plotly_chart(fig_t, use_container_width=True)
 
-        with tab_f:
-            # FFT
-            f_in, mag_in = compute_fft(original_data, original_fs)
-            f_out, mag_out = compute_fft(processed_data, new_fs)
+        with tab2:
+            # FFT solo cuando estamos en la pestaña (ahorra cálculo si no se ve)
+            f_i, m_i = compute_fft(working_data, fs)
+            f_o, m_o = compute_fft(processed, new_fs)
             
-            fig_fft = go.Figure()
-            fig_fft.add_trace(go.Scatter(x=downsample_visuals(f_in), y=downsample_visuals(20*np.log10(mag_in+1e-9)), name="Entrada"))
-            fig_fft.add_trace(go.Scatter(x=downsample_visuals(f_out), y=downsample_visuals(20*np.log10(mag_out+1e-9)), name="Salida"))
-            
-            fig_fft.update_layout(
-                xaxis_type="log", 
-                title="Espectro (dB)", 
-                margin=dict(l=0, r=0, t=30, b=0), 
-                height=350,
-                legend=dict(orientation="h", y=1, x=0)
-            )
-            try:
-                st.plotly_chart(fig_fft, use_container_width=True)
-            except:
-                st.plotly_chart(fig_fft)
+            fig_f = go.Figure()
+            fig_f.add_trace(go.Scatter(x=downsample_visuals(f_i), y=downsample_visuals(20*np.log10(m_i+1e-9)), name="In"))
+            fig_f.add_trace(go.Scatter(x=downsample_visuals(f_o), y=downsample_visuals(20*np.log10(m_o+1e-9)), name="Out"))
+            fig_f.update_layout(height=300, margin=dict(t=20, b=20, l=20, r=20), xaxis_type="log", yaxis_title="dB")
+            st.plotly_chart(fig_f, use_container_width=True)
 
-    with col_controls:
-        st.write(f"### 🎧 Salida")
-        st.caption(f"Frecuencia: **{new_fs} Hz**")
+    with col_side:
+        st.write(f"### 🎧 Monitor")
+        st.caption(f"Salida: **{new_fs} Hz**")
         
-        # PREPARACIÓN DE AUDIO (RAM EFFICIENT)
-        # 1. Limpieza
-        audio_final = np.nan_to_num(processed_data)
+        # PREPARAR AUDIO
+        audio_safe = np.nan_to_num(processed)
+        mx = np.max(np.abs(audio_safe))
+        if mx > 0: audio_safe /= mx
+        audio_safe = np.clip(audio_safe, -1.0, 1.0)
         
-        # 2. Normalizar (Solo si es necesario)
-        max_amp = np.max(np.abs(audio_final))
-        if max_amp > 0: audio_final /= max_amp
-        
-        # 3. Clip
-        audio_final = np.clip(audio_final, -1.0, 1.0)
-        
-        # 4. Write
         virtual_wav = io.BytesIO()
-        write(virtual_wav, new_fs, (audio_final * 32760).astype(np.int16))
-        virtual_wav.seek(0)
+        write(virtual_wav, new_fs, (audio_safe * 32760).astype(np.int16))
         
-        st.audio(virtual_wav, format='audio/wav')
+        # Reproducción Automática (Experimental)
+        # autoplay=True intenta reproducir apenas carga, dando sensación de continuidad
+        st.audio(virtual_wav, format='audio/wav', autoplay=True)
         
-        # Botón de descarga explícito
-        st.download_button(
-            label="⬇️ Descargar WAV",
-            data=virtual_wav,
-            file_name="audio_procesado.wav",
-            mime="audio/wav"
-        )
+        if not use_loop:
+            st.success("✅ Procesamiento completo.")
+            st.download_button("⬇️ Descargar WAV", virtual_wav, "audio_dsp.wav", "audio/wav")
+        else:
+            st.info("💡 Desactiva el 'Modo Rápido' para descargar la canción completa.")
 
-    # --- LIMPIEZA DE MEMORIA MANUAL ---
-    # Esto ayuda a que el servidor no se quede con basura de la ejecución anterior
-    del original_data
-    del resampled_data
-    del processed_data
+    # LIMPIEZA OBLIGATORIA
+    del working_data, resampled, processed, audio_safe
     gc.collect()
 
 else:
-    st.info("👈 Selecciona un archivo para comenzar.")
+    st.info("👈 Comienza seleccionando un audio.")
