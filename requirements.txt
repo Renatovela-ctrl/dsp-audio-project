@@ -2,5 +2,5 @@ streamlit
 numpy
 scipy
 plotly
-pandas
 soundfile
+matplotlib
