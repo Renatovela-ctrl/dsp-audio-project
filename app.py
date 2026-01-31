@@ -9,51 +9,57 @@ import time
 from scipy.io.wavfile import write
 from modules.dsp_core import load_audio, change_sampling_rate, apply_equalizer, compute_fft
 
-# --- 1. CONFIGURACIÓN Y ESTILOS ---
+# --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="DSP Live Studio", layout="wide", page_icon="🎛️")
 
 st.markdown("""
     <style>
     .stAlert { display: none; }
     .block-container { padding-top: 1rem; }
-    .dsp-card { background-color: #f8f9fa; padding: 15px; border-radius: 8px; border: 1px solid #dee2e6; }
+    .dsp-card { background-color: #f8f9fa; padding: 10px; border-radius: 8px; border: 1px solid #dee2e6; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. GESTIÓN DE ESTADO (SESSION STATE) ---
-# Aquí guardamos los datos para que no se pierdan ni se mezclen al recargar
+# --- 2. GESTIÓN DE ESTADO AVANZADA ---
+# Inicializamos variables para guardar las FIGURAS completas
+if 'fig_time' not in st.session_state:
+    st.session_state.fig_time = None
+if 'fig_freq' not in st.session_state:
+    st.session_state.fig_freq = None
+# Variables de datos de audio
 if 'audio_data' not in st.session_state:
     st.session_state.audio_data = None
 if 'audio_fs' not in st.session_state:
     st.session_state.audio_fs = 0
-if 'file_name' not in st.session_state:
-    st.session_state.file_name = ""
+if 'current_filename' not in st.session_state:
+    st.session_state.current_filename = ""
 
-# --- 3. FUNCIONES DE CARGA (CALLBACKS) ---
+# --- 3. CALLBACKS DE CARGA (Para evitar recargas accidentales) ---
 def load_file_callback():
-    """Esta función se ejecuta SOLO cuando subes un archivo nuevo"""
     if st.session_state.uploader is not None:
         data, fs = load_audio(st.session_state.uploader)
         st.session_state.audio_data = data
         st.session_state.audio_fs = fs
-        st.session_state.file_name = st.session_state.uploader.name
-        # Forzar limpieza de memoria
+        st.session_state.current_filename = st.session_state.uploader.name
+        # Resetear figuras al cambiar de archivo
+        st.session_state.fig_time = None 
+        st.session_state.fig_freq = None
         gc.collect()
 
 def load_example_callback():
-    """Esta función se ejecuta SOLO cuando cambias la selección de ejemplo"""
-    selected_file = st.session_state.example_selector
-    examples_dir = "examples"
-    file_path = os.path.join(examples_dir, selected_file)
-    
-    if os.path.exists(file_path):
-        data, fs = load_audio(file_path)
+    fname = st.session_state.example_selector
+    path = os.path.join("examples", fname)
+    if os.path.exists(path):
+        data, fs = load_audio(path)
         st.session_state.audio_data = data
         st.session_state.audio_fs = fs
-        st.session_state.file_name = selected_file
+        st.session_state.current_filename = fname
+        # Resetear figuras
+        st.session_state.fig_time = None
+        st.session_state.fig_freq = None
         gc.collect()
 
-# --- 4. FUNCIONES DSP Y UTILITARIOS ---
+# --- 4. UTILITARIOS ---
 def downsample_visuals(data, max_points=2000):
     if len(data) > max_points:
         step = len(data) // max_points
@@ -61,108 +67,67 @@ def downsample_visuals(data, max_points=2000):
     return data
 
 def render_smart_player(audio_bytes, fs, unique_id):
-    """
-    Reproductor HTML/JS que maneja la persistencia del tiempo.
-    unique_id: Debe cambiar si la canción cambia, pero mantenerse si solo movemos EQ.
-    """
+    """Reproductor persistente v3.0"""
     b64 = base64.b64encode(audio_bytes.read()).decode()
-    
-    # ID del elemento HTML (fijo para que Streamlit no lo destruya al redibujar)
-    html_id = "persistent_audio_player"
-    
-    # Clave para sessionStorage (varía según la canción para no mezclar tiempos)
-    storage_key = f"time_{unique_id}"
+    html_id = "persistent_player"
+    storage_key = f"t_{unique_id}" # Clave corta y única por canción
     
     html = f"""
     <div class="dsp-card">
-        <div style="display:flex; justify-content:space-between; margin-bottom:5px;">
-            <strong>Monitor de Salida ({fs} Hz)</strong>
-            <span style="font-size:0.8em; color:#666;">Persistencia Activa</span>
-        </div>
-        <audio id="{html_id}" controls autoplay style="width: 100%;">
+        <div style="font-size:0.8em; color:#666; margin-bottom:5px;">Monitor ({fs} Hz)</div>
+        <audio id="{html_id}" controls autoplay style="width: 100%; height: 35px;">
             <source src="data:audio/wav;base64,{b64}" type="audio/wav">
         </audio>
     </div>
-
     <script>
         (function() {{
-            var audio = document.getElementById('{html_id}');
-            var key = '{storage_key}';
-            
-            // Cuando los metadatos cargan (duración, etc.)
-            audio.onloadedmetadata = function() {{
-                var saved = sessionStorage.getItem(key);
-                
-                if (saved && saved !== "null") {{
-                    var t = parseFloat(saved);
-                    // Si el tiempo guardado es válido para ESTA canción, saltamos
-                    if (t < audio.duration && t > 0) {{
-                        // Pequeño margen para evitar glitches
-                        if (Math.abs(audio.currentTime - t) > 0.5) {{
-                            audio.currentTime = t;
-                        }}
-                    }} else {{
-                        // Si el tiempo es mayor que la duración (cambio de canción), resetear
-                        sessionStorage.setItem(key, 0);
-                    }}
+            var a = document.getElementById('{html_id}');
+            var k = '{storage_key}';
+            a.onloadedmetadata = function() {{
+                var s = sessionStorage.getItem(k);
+                if (s && s!=="null") {{
+                    var t = parseFloat(s);
+                    if (t < a.duration && t > 0) a.currentTime = t;
                 }}
-                
-                var p = audio.play();
-                if (p !== undefined) {{ p.catch(e => {{ console.log("Autoplay waiting interaction"); }}); }}
+                a.play().catch(e=>console.log("Autoplay waiting"));
             }};
-            
-            // Guardar tiempo cada vez que avanza
-            audio.ontimeupdate = function() {{
-                if (audio.currentTime > 0) sessionStorage.setItem(key, audio.currentTime);
-            }};
+            a.ontimeupdate = function() {{ if(a.currentTime>0) sessionStorage.setItem(k, a.currentTime); }};
         }})();
     </script>
     """
     st.components.v1.html(html, height=100)
 
-# --- 5. INTERFAZ DE USUARIO ---
+# --- 5. INTERFAZ ---
 st.title("🎛️ DSP Live Studio")
 
-# --- BARRA LATERAL: SELECCIÓN ---
+# BARRA LATERAL
 st.sidebar.header("1. Fuente")
 input_type = st.sidebar.radio("Tipo:", ["Ejemplo", "Subir"], horizontal=True)
 
 if input_type == "Subir":
-    st.sidebar.file_uploader(
-        "Archivo WAV", type=["wav"], 
-        key="uploader", 
-        on_change=load_file_callback # <--- AQUÍ ESTÁ LA MAGIA (Callback)
-    )
+    st.sidebar.file_uploader("WAV", type=["wav"], key="uploader", on_change=load_file_callback)
 else:
-    examples_dir = "examples"
-    if os.path.exists(examples_dir):
-        files = [f for f in os.listdir(examples_dir) if f.endswith('.wav')]
+    if os.path.exists("examples"):
+        files = [f for f in os.listdir("examples") if f.endswith('.wav')]
         if files:
-            st.sidebar.selectbox(
-                "Selecciona:", files, 
-                key="example_selector", 
-                on_change=load_example_callback # <--- AQUÍ ESTÁ LA MAGIA (Callback)
-            )
-        else:
-            st.sidebar.error("No hay archivos en /examples")
+            st.sidebar.selectbox("Pista:", files, key="example_selector", on_change=load_example_callback)
 
-# --- VERIFICACIÓN DE CARGA ---
+# --- VALIDACIÓN DE DATOS ---
 if st.session_state.audio_data is None:
-    st.info("👈 Por favor carga un archivo para comenzar.")
-    st.stop() # Detiene la ejecución aquí si no hay datos
+    st.info("👈 Carga un archivo para empezar.")
+    st.stop()
 
-# Si llegamos aquí, hay datos cargados en Session State
+# Recuperar datos del estado
 full_data = st.session_state.audio_data
 original_fs = st.session_state.audio_fs
-current_file = st.session_state.file_name
+fname = st.session_state.current_filename
 
-st.sidebar.success(f"Track: {current_file} | {len(full_data)/original_fs:.1f}s")
+st.sidebar.caption(f"Track: **{fname}** | {original_fs} Hz")
 
-# --- 6. CONTROLES DSP ---
+# --- 6. CONTROLES ---
 st.sidebar.markdown("---")
 use_loop = st.sidebar.toggle("⚡ Modo Loop (15s)", value=True)
 
-# Lógica de recorte
 if use_loop:
     mid = len(full_data) // 2
     window = 15 * original_fs
@@ -172,75 +137,89 @@ if use_loop:
 else:
     working_data = full_data
 
-st.sidebar.subheader("Resampling")
+st.sidebar.subheader("DSP Settings")
 c1, c2 = st.sidebar.columns(2)
 L = c1.number_input("Upsample (L)", 1, 8, 1)
 M = c2.number_input("Downsample (M)", 1, 8, 1)
 
 st.sidebar.subheader("Ecualizador")
-# Usamos un formulario para agrupar sliders si quisiéramos, pero directos es más rápido
 cols = st.sidebar.columns(3)
 bands = ["Sub", "Bass", "LoMid", "HiMid", "Pres", "Brill"]
-freqs = ["16-60", "60-250", "250-2k", "2k-4k", "4k-6k", "6k-16k"]
 gains = {}
+for i, b in enumerate(bands):
+    with cols[i%3]:
+        gains[b] = st.slider(b, -15, 15, 0, key=f"sl_{i}")
 
-for i, band in enumerate(bands):
-    with cols[i % 3]:
-        # Key estática basada en el nombre de la banda
-        gains[band] = st.slider(band, -15, 15, 0, key=f"band_{i}", help=f"{freqs[i]} Hz")
-
-# Mapeo
 dsp_gains = {
     "Sub-Bass": gains["Sub"], "Bass": gains["Bass"], "Low Mids": gains["LoMid"],
     "High Mids": gains["HiMid"], "Presence": gains["Pres"], "Brilliance": gains["Brill"]
 }
 
 # --- 7. PROCESAMIENTO ---
-# No usamos caché aquí a propósito para el modo Loop (queremos respuesta instantánea)
-# La eficiencia viene de usar 'working_data' que es pequeño.
 resampled, new_fs = change_sampling_rate(working_data, original_fs, M, L)
 processed = apply_equalizer(resampled, new_fs, dsp_gains)
 
-# --- 8. VISUALIZACIÓN ---
+# --- 8. VISUALIZACIÓN "STATEFUL" (LA CLAVE DEL ZOOM) ---
 col_viz, col_play = st.columns([3, 2])
 
 with col_viz:
     t1, t2 = st.tabs(["Tiempo", "Frecuencia"])
     
+    # Preparar datos visuales
+    vp = downsample_visuals(processed, 1500)
+    tx = np.linspace(0, len(vp)/new_fs, len(vp))
+    
+    f, m = compute_fft(processed, new_fs)
+    vf = downsample_visuals(f, 1500)
+    vm = downsample_visuals(20*np.log10(m+1e-9), 1500)
+
+    # --- PESTAÑA TIEMPO ---
     with t1:
-        fig_t = go.Figure()
-        vp = downsample_visuals(processed, 1500)
-        tx = np.linspace(0, len(vp)/new_fs, len(vp))
-        fig_t.add_trace(go.Scatter(y=vp, x=tx, line=dict(color='#00cc96', width=1.5)))
+        # Si la figura no existe (primera vez o cambio de archivo), la creamos
+        if st.session_state.fig_time is None:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(y=vp, x=tx, line=dict(color='#00cc96', width=1.5), name="Señal"))
+            fig.update_layout(
+                height=250, margin=dict(t=10,b=10,l=10,r=10), showlegend=False,
+                uirevision="constant" # <--- ESTO MANTIENE EL ZOOM
+            )
+            st.session_state.fig_time = fig
+        else:
+            # Si YA existe, solo actualizamos los datos X e Y
+            # Esto NO toca el 'layout' (donde vive el zoom)
+            st.session_state.fig_time.data[0].y = vp
+            st.session_state.fig_time.data[0].x = tx
         
-        # ZOOM FIX: uirevision usa el nombre del archivo. 
-        # Si cambias de archivo (nombre cambia), zoom resetea. 
-        # Si solo mueves EQ (nombre igual), zoom se queda.
-        fig_t.update_layout(
-            height=250, margin=dict(t=10,b=10,l=10,r=10), showlegend=False,
-            uirevision=f"time_{current_file}" 
-        )
-        st.plotly_chart(fig_t, use_container_width=True, config={'displayModeBar': False})
+        # Renderizamos la figura guardada en sesión
+        st.plotly_chart(st.session_state.fig_time, use_container_width=True, key="p_time")
 
+    # --- PESTAÑA FRECUENCIA ---
     with t2:
-        f, m = compute_fft(processed, new_fs)
-        fig_f = go.Figure()
-        fig_f.add_trace(go.Scatter(
-            x=downsample_visuals(f, 1500), 
-            y=downsample_visuals(20*np.log10(m+1e-9), 1500), 
-            fill='tozeroy'
-        ))
-        
-        # ZOOM FIX
-        fig_f.update_layout(
-            height=250, margin=dict(t=10,b=10,l=10,r=10), showlegend=False,
-            xaxis_type="log",
-            uirevision=f"freq_{current_file}"
-        )
-        st.plotly_chart(fig_f, use_container_width=True, config={'displayModeBar': False})
+        if st.session_state.fig_freq is None:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=vf, y=vm, fill='tozeroy', name="FFT"))
+            fig.update_layout(
+                height=250, margin=dict(t=10,b=10,l=10,r=10), showlegend=False,
+                xaxis_type="log",
+                uirevision="constant" # <--- ESTO MANTIENE EL ZOOM
+            )
+            st.session_state.fig_freq = fig
+        else:
+            # Actualizamos solo datos
+            st.session_state.fig_freq.data[0].x = vf
+            st.session_state.fig_freq.data[0].y = vm
+            
+        st.plotly_chart(st.session_state.fig_freq, use_container_width=True, key="p_freq")
 
+# --- 9. AUDIO ---
 with col_play:
-    # Preparar Audio
+    # Botón para resetear zoom manualmente (Opcional, pero útil)
+    if st.button("🔄 Resetear Zoom"):
+        st.session_state.fig_time = None
+        st.session_state.fig_freq = None
+        st.rerun()
+
+    # Procesado final
     clean = np.nan_to_num(processed)
     mx = np.max(np.abs(clean))
     if mx > 0: clean /= mx
@@ -250,12 +229,10 @@ with col_play:
     write(wav_io, new_fs, (clean * 32760).astype(np.int16))
     wav_io.seek(0)
     
-    # Renderizar Player
-    # Usamos current_file como ID único para el storage de tiempo
-    render_smart_player(wav_io, new_fs, unique_id=current_file)
+    render_smart_player(wav_io, new_fs, fname)
     
     st.markdown("---")
-    st.download_button("⬇️ Descargar WAV", wav_io, f"dsp_{current_file}", "audio/wav")
+    st.download_button("⬇️ Descargar", wav_io, f"dsp_{fname}", "audio/wav")
 
-# Limpieza final
 del resampled, processed, clean, wav_io
+gc.collect()
