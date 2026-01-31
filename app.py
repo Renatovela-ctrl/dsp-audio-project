@@ -9,261 +9,236 @@ import uuid
 from scipy.io.wavfile import write
 from modules.dsp_core import load_audio, change_sampling_rate, apply_equalizer, compute_fft
 
-# --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="DSP Live Studio", layout="wide", page_icon="🎛️")
+# --- CONFIGURACIÓN ESTRUCTURAL ---
+st.set_page_config(page_title="DSP Live Workbench", layout="wide", page_icon="🎛️")
 
 st.markdown("""
     <style>
-    .stAlert { display: none; }
+    .stAlert { display: none; } 
     .block-container { padding-top: 1rem; }
-    .dsp-card { background-color: #f8f9fa; padding: 10px; border-radius: 8px; border: 1px solid #dee2e6; }
+    .dsp-monitor { 
+        background-color: #1e1e1e; color: #00ff00; 
+        padding: 10px; border-radius: 5px; font-family: monospace; 
+        margin-bottom: 10px; border: 1px solid #333;
+    }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. GESTIÓN DE ESTADO (SESSION STATE) ---
-# Inicialización de variables
+# --- GESTIÓN DE ESTADO (SESSION STATE) ---
 if 'audio_data' not in st.session_state:
     st.session_state.audio_data = None
-    st.session_state.audio_fs = 0
-    st.session_state.file_name = ""  # <--- CORREGIDO: Nombre unificado
+    st.session_state.fs = 0
+    st.session_state.file_id = str(uuid.uuid4()) # ID único del archivo actual
+    st.session_state.file_name = ""
 
-# Estado para las Figuras (Persistencia visual)
-if 'fig_time' not in st.session_state: st.session_state.fig_time = None
-if 'fig_freq' not in st.session_state: st.session_state.fig_freq = None
+# --- LOGICA DE CARGA (CALLBACKS) ---
+def new_file_loaded(data, fs, name):
+    st.session_state.audio_data = data
+    st.session_state.fs = fs
+    st.session_state.file_name = name
+    # CAMBIAMOS EL ID DEL ARCHIVO: Esto le dice a Plotly "Hey, es un archivo nuevo, resetea el zoom"
+    st.session_state.file_id = str(uuid.uuid4()) 
 
-# Estado para el Zoom
-if 'zoom_uid' not in st.session_state: st.session_state.zoom_uid = str(uuid.uuid4())
-
-# --- 3. CALLBACKS ---
-def reset_system():
-    """Resetea figuras y zoom al cambiar de archivo"""
-    st.session_state.fig_time = None
-    st.session_state.fig_freq = None
-    st.session_state.zoom_uid = str(uuid.uuid4()) # Forzar reset de cámara
-
-def load_file_callback():
+def load_uploaded():
     if st.session_state.uploader:
         d, fs = load_audio(st.session_state.uploader)
-        st.session_state.audio_data = d
-        st.session_state.audio_fs = fs
-        st.session_state.file_name = st.session_state.uploader.name
-        reset_system()
+        new_file_loaded(d, fs, st.session_state.uploader.name)
 
-def load_example_callback():
-    fname = st.session_state.example_selector
-    path = os.path.join("examples", fname)
+def load_example():
+    path = os.path.join("examples", st.session_state.ex_selector)
     if os.path.exists(path):
         d, fs = load_audio(path)
-        st.session_state.audio_data = d
-        st.session_state.audio_fs = fs
-        st.session_state.file_name = fname
-        reset_system()
+        new_file_loaded(d, fs, st.session_state.ex_selector)
 
-def trigger_zoom_reset():
-    """Genera un nuevo ID para obligar a Plotly a resetear la vista"""
-    st.session_state.zoom_uid = str(uuid.uuid4())
-
-# --- 4. UTILITARIOS ---
-def downsample_visuals(data, max_points=1500):
-    if len(data) > max_points:
-        step = len(data) // max_points
-        return data[::step]
+# --- UTILIDADES DSP & VISUAL ---
+def normalize_visuals(data):
+    """Normaliza para visualización: Rango [-1, 1]"""
+    # Evita que una señal suene fuerte y la otra se vea pequeña
+    mx = np.max(np.abs(data))
+    if mx > 0:
+        return data / mx
     return data
 
-def render_smart_player(audio_bytes, fs, unique_id):
+def downsample(data, max_points=3000):
+    if len(data) > max_points:
+        return data[::len(data)//max_points]
+    return data
+
+def render_player(audio_bytes, fs, unique_token):
+    """Reproductor que respeta la sesión"""
     b64 = base64.b64encode(audio_bytes.read()).decode()
-    html_id = "persistent_player"
-    # Usamos el nombre del archivo en la clave para no mezclar tiempos entre canciones
-    clean_id = "".join(x for x in str(unique_id) if x.isalnum())
-    storage_key = f"t_{clean_id}"
+    # Usamos el unique_token (file_id) para guardar el tiempo
+    # Si cambias de archivo (token nuevo), el tiempo empieza de 0.
+    # Si ecualizas (token igual), el tiempo se mantiene.
+    storage_key = f"time_{unique_token}"
+    html_id = f"audio_{unique_token}" # ID único para el DOM
     
     html = f"""
-    <div class="dsp-card">
-        <div style="font-size:0.8em; color:#666; margin-bottom:5px;">Monitor ({fs} Hz)</div>
-        <audio id="{html_id}" controls autoplay style="width: 100%; height: 35px;">
-            <source src="data:audio/wav;base64,{b64}" type="audio/wav">
-        </audio>
-    </div>
+    <div class="dsp-monitor">Output Monitor: {fs} Hz | Active</div>
+    <audio id="{html_id}" controls autoplay style="width:100%;">
+        <source src="data:audio/wav;base64,{b64}" type="audio/wav">
+    </audio>
     <script>
         (function() {{
             var a = document.getElementById('{html_id}');
             var k = '{storage_key}';
-            
             a.onloadedmetadata = function() {{
                 var s = sessionStorage.getItem(k);
-                if (s && s!=="null") {{
+                if(s && s!=="null") {{
                     var t = parseFloat(s);
-                    // Restaurar solo si es válido para ESTA canción
-                    if (t < a.duration && t > 0) {{
-                         a.currentTime = t;
-                    }} else {{
-                        // Si cambiamos de canción y el tiempo guardado es mayor a la duración nueva
-                        sessionStorage.setItem(k, 0);
-                    }}
+                    if(t < a.duration) a.currentTime = t;
                 }}
                 a.play().catch(e=>console.log("Autoplay waiting"));
             }};
-            
-            a.ontimeupdate = function() {{ 
-                if(a.currentTime>0) sessionStorage.setItem(k, a.currentTime); 
-            }};
+            a.ontimeupdate = function() {{ sessionStorage.setItem(k, a.currentTime); }};
         }})();
     </script>
     """
     st.components.v1.html(html, height=100)
 
-# --- 5. INTERFAZ ---
-st.title("🎛️ DSP Live Studio")
+# --- INTERFAZ ---
+st.title("🎛️ Ingeniería de Señales: DSP Workbench")
 
-# BARRA LATERAL
-st.sidebar.header("1. Fuente")
-mode = st.sidebar.radio("Tipo:", ["Ejemplo", "Subir"], horizontal=True)
+# 1. INPUT
+col_in1, col_in2 = st.sidebar.columns(2)
+mode = col_in1.radio("Fuente", ["Ejemplo", "Subir"], label_visibility="collapsed")
 
 if mode == "Subir":
-    st.sidebar.file_uploader("WAV", type=["wav"], key="uploader", on_change=load_file_callback)
+    st.sidebar.file_uploader("WAV File", type=["wav"], key="uploader", on_change=load_uploaded)
 else:
     if os.path.exists("examples"):
         files = [f for f in os.listdir("examples") if f.endswith('.wav')]
         if files:
-            st.sidebar.selectbox("Pista:", files, key="example_selector", on_change=load_example_callback)
+            st.sidebar.selectbox("Seleccionar", files, key="ex_selector", on_change=load_example)
 
-# VALIDACIÓN
 if st.session_state.audio_data is None:
-    st.info("👈 Carga un archivo para empezar.")
+    st.info("⚠️ Carga una señal para iniciar el análisis.")
     st.stop()
 
-# RECUPERAR DATOS (Ahora sí con el nombre correcto)
-full_data = st.session_state.audio_data
-original_fs = st.session_state.audio_fs
-fname = st.session_state.file_name
+# Recuperar datos
+raw_data = st.session_state.audio_data
+fs_in = st.session_state.fs
 
-st.sidebar.caption(f"Track: **{fname}** | {original_fs} Hz")
+# 2. PROCESAMIENTO
+st.sidebar.markdown("### ⚙️ Procesamiento Multitasa")
+use_loop = st.sidebar.checkbox("Modo Análisis (Loop 15s)", value=True, help="Analiza un segmento corto para respuesta inmediata.")
 
-# --- CONFIGURACIÓN LOOP ---
-st.sidebar.markdown("---")
-use_loop = st.sidebar.toggle("⚡ Modo Loop (15s)", value=True)
-
+# Selección de datos
 if use_loop:
-    mid = len(full_data) // 2
-    window = 15 * original_fs
-    start = max(0, mid - (window // 2))
-    end = min(len(full_data), start + window)
-    working_data = full_data[start:end]
+    mid = len(raw_data) // 2
+    win = 15 * fs_in
+    start = max(0, mid - (win//2))
+    end = min(len(raw_data), start + win)
+    work_data = raw_data[start:end]
+    st.sidebar.caption(f"Analizando tramo: {start/fs_in:.1f}s - {end/fs_in:.1f}s")
 else:
-    working_data = full_data
+    work_data = raw_data
+    st.sidebar.warning("Procesando archivo completo (Lento)")
 
-st.sidebar.subheader("DSP Settings")
+# Controles M/L
 c1, c2 = st.sidebar.columns(2)
 L = c1.number_input("Upsample (L)", 1, 8, 1)
 M = c2.number_input("Downsample (M)", 1, 8, 1)
 
-st.sidebar.subheader("Ecualizador")
-cols = st.sidebar.columns(3)
-bands = ["Sub", "Bass", "LoMid", "HiMid", "Pres", "Brill"]
+# Ecualizador
+st.sidebar.markdown("### 🎚️ Banco de Filtros")
 gains = {}
-for i, b in enumerate(bands):
+bands = ["Sub (16-60)", "Bass (60-250)", "LoMid (250-2k)", "HiMid (2k-4k)", "Pres (4k-6k)", "Brill (6k-16k)"]
+keys = ["Sub-Bass", "Bass", "Low Mids", "High Mids", "Presence", "Brilliance"]
+
+cols = st.sidebar.columns(3)
+for i, (b_label, b_key) in enumerate(zip(bands, keys)):
     with cols[i%3]:
-        gains[b] = st.slider(b, -15, 15, 0, key=f"sl_{i}")
+        gains[b_key] = st.slider(b_label.split()[0], -15, 15, 0, key=f"eq_{i}", help=b_label)
 
-dsp_gains = {
-    "Sub-Bass": gains["Sub"], "Bass": gains["Bass"], "Low Mids": gains["LoMid"],
-    "High Mids": gains["HiMid"], "Presence": gains["Pres"], "Brilliance": gains["Brill"]
-}
-
-# --- PROCESAMIENTO ---
-resampled, new_fs = change_sampling_rate(working_data, original_fs, M, L)
-processed = apply_equalizer(resampled, new_fs, dsp_gains)
+# --- DSP ENGINE ---
+# 1. Resampling
+resampled, fs_out = change_sampling_rate(work_data, fs_in, M, L)
+# 2. Equalization
+processed = apply_equalizer(resampled, fs_out, gains)
 
 # --- VISUALIZACIÓN ---
-col_viz, col_play = st.columns([3, 2])
+st.divider()
+c_viz, c_out = st.columns([3, 1])
 
-with col_viz:
-    # Header con botón Reset
-    head_col1, head_col2 = st.columns([3, 1])
-    with head_col1:
-        t1, t2 = st.tabs(["Tiempo (Orig vs Proc)", "Frecuencia"])
-    with head_col2:
-        st.write("") # Espaciador
-        st.button("🔄 Reset Zoom", on_click=trigger_zoom_reset)
+with c_viz:
+    tab1, tab2 = st.tabs(["📈 Análisis Temporal", "🌊 Análisis Espectral"])
+    
+    # Pre-cálculo de visuales
+    # IMPORTANTE: Normalizamos AMBOS para que se vean comparables en amplitud
+    v_in = downsample(normalize_visuals(work_data))
+    v_out = downsample(normalize_visuals(processed))
+    
+    t_in = np.linspace(0, len(v_in)/fs_in, len(v_in))
+    t_out = np.linspace(0, len(v_out)/fs_out, len(v_out))
 
-    # --- PESTAÑA TIEMPO ---
-    with t1:
-        # Datos Originales (Gris)
-        v_orig = downsample_visuals(working_data, 1500)
-        t_orig = np.linspace(0, len(v_orig)/original_fs, len(v_orig))
+    # --- GRAFICA TEMPORAL ---
+    with tab1:
+        fig_t = go.Figure()
+        # Original en gris tenue
+        fig_t.add_trace(go.Scatter(x=t_in, y=v_in, name="Original (Norm)", 
+                                 line=dict(color='gray', width=1), opacity=0.5))
+        # Procesada en verde brillante
+        fig_t.add_trace(go.Scatter(x=t_out, y=v_out, name="Procesada (Norm)", 
+                                 line=dict(color='#00ff00', width=1.5)))
         
-        # Datos Procesados (Verde)
-        v_proc = downsample_visuals(processed, 1500)
-        t_proc = np.linspace(0, len(v_proc)/new_fs, len(v_proc))
+        # LA CLAVE DEL ZOOM: uirevision
+        # Usamos st.session_state.file_id. 
+        # Si mueves el slider, file_id NO cambia -> ZOOM SE QUEDA.
+        # Si cambias archivo, file_id cambia -> ZOOM RESET.
+        fig_t.update_layout(
+            template="plotly_dark",
+            margin=dict(l=10, r=10, t=30, b=10),
+            height=300,
+            uirevision=st.session_state.file_id, 
+            title="Comparativa en el Tiempo (Normalizada)"
+        )
+        st.plotly_chart(fig_t, use_container_width=True)
 
-        # Crear o Actualizar Figura STATEFUL
-        if st.session_state.fig_time is None:
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=t_orig, y=v_orig, name="Original", 
-                                   line=dict(color='gray', width=1), opacity=0.4))
-            fig.add_trace(go.Scatter(x=t_proc, y=v_proc, name="Procesada", 
-                                   line=dict(color='#00cc96', width=1.5)))
-            
-            fig.update_layout(height=280, margin=dict(t=10,b=10,l=10,r=10), 
-                            legend=dict(orientation="h", y=1.1, x=0))
-            st.session_state.fig_time = fig
-        else:
-            # Solo inyectar datos, NO tocar layout (mantiene zoom)
-            st.session_state.fig_time.data[0].x = t_orig
-            st.session_state.fig_time.data[0].y = v_orig
-            st.session_state.fig_time.data[1].x = t_proc
-            st.session_state.fig_time.data[1].y = v_proc
-
-        # Aplicar el ID de Zoom actual
-        st.session_state.fig_time.layout.uirevision = st.session_state.zoom_uid
-        st.plotly_chart(st.session_state.fig_time, use_container_width=True, key="chart_time")
-
-    # --- PESTAÑA FRECUENCIA ---
-    with t2:
-        # FFT Orig
-        fo, mo = compute_fft(working_data, original_fs)
-        vf_o = downsample_visuals(fo, 1500)
-        vm_o = downsample_visuals(20*np.log10(mo+1e-9), 1500)
+    # --- GRAFICA ESPECTRAL ---
+    with tab2:
+        f_in, m_in = compute_fft(work_data, fs_in)
+        f_out, m_out = compute_fft(processed, fs_out)
         
-        # FFT Proc
-        fp, mp = compute_fft(processed, new_fs)
-        vf_p = downsample_visuals(fp, 1500)
-        vm_p = downsample_visuals(20*np.log10(mp+1e-9), 1500)
+        vf_in = downsample(f_in)
+        vm_in = downsample(20*np.log10(m_in+1e-9))
+        vf_out = downsample(f_out)
+        vm_out = downsample(20*np.log10(m_out+1e-9))
 
-        if st.session_state.fig_freq is None:
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=vf_o, y=vm_o, name="Original", 
-                                   line=dict(color='gray', width=1), opacity=0.4))
-            fig.add_trace(go.Scatter(x=vf_p, y=vm_p, name="Procesada", 
-                                   fill='tozeroy', line=dict(color='#ef553b', width=1)))
-            
-            fig.update_layout(height=280, margin=dict(t=10,b=10,l=10,r=10), 
-                            xaxis_type="log", legend=dict(orientation="h", y=1.1, x=0))
-            st.session_state.fig_freq = fig
-        else:
-            st.session_state.fig_freq.data[0].x = vf_o
-            st.session_state.fig_freq.data[0].y = vm_o
-            st.session_state.fig_freq.data[1].x = vf_p
-            st.session_state.fig_freq.data[1].y = vm_p
+        fig_f = go.Figure()
+        fig_f.add_trace(go.Scatter(x=vf_in, y=vm_in, name="Espectro Original", 
+                                 line=dict(color='gray'), opacity=0.5))
+        fig_f.add_trace(go.Scatter(x=vf_out, y=vm_out, name="Espectro Procesado", 
+                                 fill='tozeroy', line=dict(color='#00ff00')))
+        
+        fig_f.update_layout(
+            template="plotly_dark",
+            margin=dict(l=10, r=10, t=30, b=10),
+            height=300,
+            xaxis_type="log",
+            uirevision=st.session_state.file_id, # El mismo truco para el zoom
+            title="Espectro de Magnitud (Banda Base)"
+        )
+        st.plotly_chart(fig_f, use_container_width=True)
 
-        st.session_state.fig_freq.layout.uirevision = st.session_state.zoom_uid
-        st.plotly_chart(st.session_state.fig_freq, use_container_width=True, key="chart_freq")
-
-# --- AUDIO ---
-with col_play:
-    # Preparar Audio
-    clean = np.nan_to_num(processed)
-    mx = np.max(np.abs(clean))
-    if mx > 0: clean /= mx
-    clean = np.clip(clean, -1.0, 1.0)
+with c_out:
+    # --- SALIDA DE AUDIO ---
+    # Normalización final para audio (Ojo: distinta a la visual)
+    audio_out = np.nan_to_num(processed)
+    peak = np.max(np.abs(audio_out))
+    if peak > 0: audio_out /= peak # Normalizar a 0dBFS
+    audio_out = np.clip(audio_out, -1.0, 1.0)
     
-    wav_io = io.BytesIO()
-    write(wav_io, new_fs, (clean * 32760).astype(np.int16))
-    wav_io.seek(0)
+    # Buffer
+    buffer = io.BytesIO()
+    write(buffer, fs_out, (audio_out * 32767).astype(np.int16))
     
-    render_smart_player(wav_io, new_fs, fname)
+    # Reproductor
+    render_player(buffer, fs_out, st.session_state.file_id)
     
-    st.markdown("---")
-    st.download_button("⬇️ Descargar WAV", wav_io, f"dsp_{fname}", "audio/wav")
+    st.divider()
+    st.download_button("💾 Descargar .WAV", buffer, f"processed_{st.session_state.file_id}.wav", "audio/wav")
 
+# Garbage Collection explícito
+del resampled, processed, audio_out, buffer
 gc.collect()
