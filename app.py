@@ -177,59 +177,77 @@ if viz_mode == "🛠️ Análisis Completo":
         )
         st.plotly_chart(fig_t, use_container_width=True)
 
-    with t2:
+with t2:
         limit = min(len(work_data), 100000)
         fi, mi = compute_fft(work_data[:limit], fs_in)
         fo, mo = compute_fft(processed[:limit], fs_out)
         
+        # Conversión a dB
+        mi_db = 20*np.log10(mi + 1e-9)
+        mo_db = 20*np.log10(mo + 1e-9)
+
+        # Downsample visual
         vi_f = safe_downsample(fi) * x_mult
-        vi_m = safe_downsample(20*np.log10(mi+1e-9))
+        vi_m = safe_downsample(mi_db)
         vo_f = safe_downsample(fo) * x_mult
-        vo_m = safe_downsample(20*np.log10(mo+1e-9))
+        vo_m = safe_downsample(mo_db)
 
         fig_f = go.Figure()
-        fig_f.add_trace(go.Scatter(x=vi_f, y=vi_m, name="In", line=dict(color='gray', width=1)))
-        fig_f.add_trace(go.Scatter(x=vo_f, y=vo_m, name="Out", fill='tozeroy', line=dict(color='cyan', width=1.5)))
+        fig_f.add_trace(go.Scatter(x=vi_f, y=vi_m, name="Original", line=dict(color='gray', width=1)))
+        fig_f.add_trace(go.Scatter(x=vo_f, y=vo_m, name="Procesada", fill='tozeroy', line=dict(color='cyan', width=1.5)))
         
-        # --- LÍNEAS DE BANDAS ---
+        # --- LÍNEAS DE BANDAS MÁS VISIBLES ---
         boundaries = [60, 250, 2000, 4000, 6000]
         for b in boundaries:
             pos = b * x_mult
-            fig_f.add_vline(x=pos, line_dash="dash", line_color="rgba(255,255,255,0.3)")
+            # Línea Amarilla Brillante y más gruesa
+            fig_f.add_vline(x=pos, line_width=2, line_dash="dot", line_color="#FFFF00", opacity=0.8)
+            # Etiqueta solo si estamos en Hz para no saturar
             if f_unit == "Hz":
-                fig_f.add_annotation(x=pos, y=0, text=f"{b}", showarrow=False, yshift=10, font=dict(color="white"))
+                fig_f.add_annotation(
+                    x=pos, y=0.95, yref="paper", # Posición relativa arriba
+                    text=f"<b>{b}</b>", 
+                    showarrow=False, 
+                    font=dict(color="#FFFF00", size=10),
+                    xanchor="left"
+                )
+
+        # --- AJUSTE DE RANGO FIJO (La clave para ver bien el espectro) ---
+        # Audio útil: 20 Hz a Nyquist
+        min_f = 20 * x_mult
+        max_f = (fs_in / 2) * x_mult
+        
+        # Selector de escala opcional
+        scale_col, _ = st.columns([1,3])
+        with scale_col:
+            scale_type = st.radio("Escala:", ["Logarítmica", "Lineal"], horizontal=True, label_visibility="collapsed")
+        
+        x_type = "log" if scale_type == "Logarítmica" else "linear"
+        
+        # Calcular rangos para Plotly
+        if x_type == "log":
+            x_range = [np.log10(min_f), np.log10(max_f)]
+        else:
+            x_range = [0, max_f]
 
         fig_f.update_layout(
-            template="plotly_dark", height=300, margin=dict(l=10, r=10, t=30, b=10),
-            title=f"Espectro ({f_unit})", xaxis_type="log", uirevision=st.session_state.file_id
+            template="plotly_dark", height=350, margin=dict(l=10, r=10, t=30, b=10),
+            title=f"Espectro de Magnitud ({f_unit})",
+            xaxis=dict(
+                title=f"Frecuencia ({f_unit})",
+                type=x_type,
+                range=x_range, # <--- ESTO FIXEA EL ZOOM
+                showgrid=True, gridcolor='#333'
+            ),
+            yaxis=dict(
+                title="Magnitud (dB)",
+                range=[-80, 10], # <--- Rango dinámico típico de música (-80dB a +10dB)
+                showgrid=True, gridcolor='#333'
+            ),
+            legend=dict(x=0, y=1, bgcolor='rgba(0,0,0,0.5)'),
+            uirevision=st.session_state.file_id
         )
         st.plotly_chart(fig_f, use_container_width=True)
-
-else:
-    # MODO TEÓRICO (STEM PLOT)
-    st.markdown("#### 🔬 Análisis Discreto (Zoom 50 muestras)")
-    n_samples = 40
-    center = len(work_data) // 2
-    
-    slice_in = normalize_visuals(work_data[center : center+n_samples])
-    
-    ratio = fs_out / fs_in
-    center_out = int(center * ratio)
-    n_out = int(n_samples * ratio)
-    slice_out = normalize_visuals(processed[center_out : center_out+n_out])
-
-    fig_stem, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 5), constrained_layout=True)
-    
-    ax1.stem(range(len(slice_in)), slice_in, linefmt='k-', markerfmt='ko', basefmt='k-')
-    ax1.set_title(r"Entrada $x[n]$", fontsize=10)
-    ax1.grid(alpha=0.3)
-    
-    x_out_idx = np.linspace(0, len(slice_in), len(slice_out))
-    ax2.stem(x_out_idx, slice_out, linefmt='r-', markerfmt='ro', basefmt='k-')
-    ax2.set_title(r"Salida $y[n]$", fontsize=10)
-    ax2.grid(alpha=0.3)
-    
-    st.pyplot(fig_stem)
 
 # --- OUTPUT ---
 st.divider()
