@@ -201,18 +201,35 @@ else:
     # MODO TEÓRICO: 3 ETAPAS
     st.markdown("#### 🔬 Secuencias Discretas (Zoom 40 muestras)")
     
+    # --- SELECTOR DE INSTANTE ---
+    # Calculamos la duración total en segundos
+    duracion_total = len(x_trabajo) / fs_entrada
+    
+    # Slider para elegir el segundo exacto
+    t_seleccionado = st.slider("Seleccionar Instante de Análisis (segundos)", 
+                               min_value=0.0, 
+                               max_value=duracion_total, 
+                               value=duracion_total/2.0, # Valor por defecto: Centro
+                               step=0.01)
+    
+    # Convertimos tiempo a índice de muestra (para x[n])
+    c = int(t_seleccionado * fs_entrada)
+    
+    # Validar que no nos salgamos del array
     muestras = 40
-    c = len(x_trabajo) // 2
+    if c + muestras > len(x_trabajo):
+        c = len(x_trabajo) - muestras
     
     # 1. Entrada x[n]
     x_s = x_trabajo[c : c+muestras]
     
-    # Índices equivalentes para salida
+    # Índices equivalentes para salida (Sincronización de Tiempos)
     ratio = fs_salida / fs_entrada
     c_out = int(c * ratio)
     m_out = int(muestras * ratio)
     
     # 2. Intermedia y[n]
+    if c_out + m_out > len(y_intermedia): c_out = len(y_intermedia) - m_out
     y_s = y_intermedia[c_out : c_out + m_out]
     
     # 3. Salida z[n]
@@ -221,26 +238,25 @@ else:
     # Crear 3 subplots verticales
     fig_stem, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 8), constrained_layout=True)
     
-    # Normalización para apreciar forma de onda
     norm_x = np.max(np.abs(x_s)) if np.max(np.abs(x_s)) > 0 else 1
     norm_y = np.max(np.abs(y_s)) if np.max(np.abs(y_s)) > 0 else 1
     norm_z = np.max(np.abs(z_s)) if np.max(np.abs(z_s)) > 0 else 1
 
     # Plot x
     ax1.stem(range(len(x_s)), x_s/norm_x, linefmt='k-', markerfmt='ko', basefmt='k-')
-    ax1.set_title(r"Entrada $x[n]$", fontsize=10)
+    ax1.set_title(r"Entrada $x[n]$ (t = {:.2f}s)".format(t_seleccionado), fontsize=10)
     ax1.set_ylabel("Amplitud Norm.")
     ax1.grid(alpha=0.3)
 
     # Plot y
     eje_salida = np.linspace(0, len(x_s), len(y_s))
-    ax2.stem(eje_salida, y_s/norm_y, linefmt='y-', markerfmt='yo', basefmt='k-') # Amarillo/Naranja
+    ax2.stem(eje_salida, y_s/norm_y, linefmt='y-', markerfmt='yo', basefmt='k-') 
     ax2.set_title(r"Intermedia $y[n]$ (SRC: Resampleada)", fontsize=10)
     ax2.set_ylabel("Amplitud Norm.")
     ax2.grid(alpha=0.3)
 
     # Plot z
-    ax3.stem(eje_salida, z_s/norm_z, linefmt='g-', markerfmt='go', basefmt='k-') # Verde
+    ax3.stem(eje_salida, z_s/norm_z, linefmt='g-', markerfmt='go', basefmt='k-') 
     ax3.set_title(r"Salida Final $z[n]$ (EQ: Ecualizada)", fontsize=10)
     ax3.set_xlabel("n (Muestras relativas)")
     ax3.set_ylabel("Amplitud Norm.")
@@ -252,6 +268,7 @@ else:
     st.markdown("#### 📐 Espectro Angular ($-\pi$ a $\pi$)")
     
     N_fft = 1024
+    # Centramos la FFT en el instante seleccionado por el usuario
     start_idx = max(0, c - N_fft // 2)
     end_idx = min(len(x_trabajo), start_idx + N_fft)
     
@@ -262,28 +279,20 @@ else:
     len_out = int(N_fft * ratio)
     if start_out + len_out > len(z_final): start_out = max(0, len(z_final) - len_out)
     
-    # Extract segments for Y and Z
     seg_y = y_intermedia[start_out : start_out + len_out]
     seg_z = z_final[start_out : start_out + len_out]
     
-    # FFT Calculation
     W_x = np.fft.fftshift(np.fft.fft(seg_in))
     W_y = np.fft.fftshift(np.fft.fft(seg_y))
     W_z = np.fft.fftshift(np.fft.fft(seg_z))
     
-    # Frequency Axes
     w_axis_x = np.linspace(-np.pi, np.pi, len(W_x))
-    w_axis_yz = np.linspace(-np.pi, np.pi, len(W_z)) # Y and Z share sampling rate
+    w_axis_yz = np.linspace(-np.pi, np.pi, len(W_z))
     
     fig_w, ax_w = plt.subplots(figsize=(10, 3), constrained_layout=True)
     
-    # Plot X (Input)
     ax_w.plot(w_axis_x, 20*np.log10(np.abs(W_x)+1e-9), 'k--', alpha=0.3, label='x[n]')
-    
-    # Plot Y (Resampled) - Naranja
     ax_w.plot(w_axis_yz, 20*np.log10(np.abs(W_y)+1e-9), color='orange', alpha=0.6, label='y[n]')
-    
-    # Plot Z (Final) - Verde
     ax_w.plot(w_axis_yz, 20*np.log10(np.abs(W_z)+1e-9), 'g-', alpha=0.8, label='z[n]')
     
     ax_w.set_xlim(-np.pi, np.pi)
