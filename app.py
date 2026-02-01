@@ -135,7 +135,7 @@ with st.spinner("Procesando señal..."):
 
 # --- VISUALIZACIÓN ---
 st.divider()
-tipo_grafica = st.radio("Modo de Análisis:", ["Espectral y Temporal", "Secuencia Discreta (Stem)"], horizontal=True)
+tipo_grafica = st.radio("Modo de Análisis:", ["Espectral y Temporal", "Secuencia Discreta (40 muestras)"], horizontal=True)
 
 if tipo_grafica == "Espectral y Temporal":
     col_eje, _ = st.columns([1, 4])
