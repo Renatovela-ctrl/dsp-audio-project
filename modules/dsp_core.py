@@ -1,155 +1,250 @@
 import numpy as np
 import soundfile as sf
-import scipy.signal as signal
 
 # ==========================================
-# 1. GESTIÓN DE AUDIO ROBUSTA
+# 1. GESTIÓN DE AUDIO (ENTRADA/SALIDA)
 # ==========================================
-def load_audio(file_buffer):
+
+def cargar_audio(buffer_archivo):
+    """
+    Carga el archivo de audio, lo convierte a mono y normaliza los valores.
+    Retorna la señal (array float32) y la frecuencia de muestreo.
+    """
     try:
-        data, samplerate = sf.read(file_buffer)
-        if len(data.shape) > 1:
-            data = data.mean(axis=1)
+        datos, fs = sf.read(buffer_archivo)
         
-        # Convertir a float32 para evitar overflow de int16
-        data = data.astype(np.float32)
-        
-        # Normalización segura
-        max_val = np.max(np.abs(data))
-        if max_val > 1e-6: # Evitar división por cero si es silencio
-            data = data / max_val
+        # Convertir a Mono si es estéreo promediando canales
+        if len(datos.shape) > 1:
+            datos = datos.mean(axis=1)
             
-        return data, samplerate
+        datos = datos.astype(np.float32)
+        
+        # Normalización de amplitud para evitar saturación
+        max_valor = np.max(np.abs(datos))
+        if max_valor > 1e-6:
+            datos = datos / max_valor
+            
+        return datos, fs
     except:
+        # Retorno de seguridad en caso de error de lectura
         return np.zeros(100, dtype=np.float32), 44100
 
-def compute_fft(data, fs):
-    n = len(data)
-    if n == 0: return np.array([1.0]), np.array([0.0])
-    
-    window = np.hanning(n)
-    # FFT Real (más eficiente para audio)
-    freq = np.fft.rfftfreq(n, d=1/fs)
-    magnitude = np.abs(np.fft.rfft(data * window))
-    
-    return freq, magnitude
-
 # ==========================================
-# 2. MUESTREO (Manual - Oppenheim Cap. 7)
+# 2. TRANSFORMADA DE FOURIER (ALGORITMO MANUAL)
 # ==========================================
-def generate_manual_sinc_kernel(cutoff, fs, num_taps=101):
-    """Genera filtro FIR Sinc ventaneado manualmente."""
-    if fs <= 0: return np.ones(1)
-    
-    n = np.arange(-num_taps // 2, num_taps // 2 + 1)
-    fc = cutoff / (fs / 2) # Frecuencia normalizada (0 a 1)
-    
-    # Sinc Ideal: sin(pi*x)/(pi*x)
-    h = np.sinc(fc * n) 
-    
-    # Ventana Hamming (Suavizado)
-    window = np.hamming(len(n))
-    h = h * window
-    
-    # Normalizar ganancia unitaria
-    h_sum = np.sum(h)
-    if h_sum != 0:
-        h /= h_sum
-        
-    return h
 
-def change_sampling_rate(data, original_fs, m_factor, l_factor):
-    # --- TRUE BYPASS ---
-    if m_factor == 1 and l_factor == 1:
-        return data, original_fs
-        
-    # Validaciones de seguridad
-    if m_factor < 1: m_factor = 1
-    if l_factor < 1: l_factor = 1
-    if len(data) == 0: return data, original_fs
-
-    # 1. Expansión (Upsampling) -> Insertar ceros
-    N = len(data)
-    x_expanded = np.zeros(N * l_factor, dtype=data.dtype)
-    x_expanded[::l_factor] = data
-    
-    # 2. Filtro Anti-Imagen / Anti-Aliasing
-    new_fs_temp = original_fs * l_factor
-    cutoff_freq = min(original_fs / 2, (new_fs_temp / m_factor) / 2)
-    
-    # Generar Kernel (ganancia * L para recuperar energía)
-    h = generate_manual_sinc_kernel(cutoff_freq, new_fs_temp, num_taps=61) * l_factor
-    
-    # Convolución
-    x_filtered = np.convolve(x_expanded, h, mode='same')
-    
-    # 3. Decimación (Downsampling)
-    x_final = x_filtered[::m_factor]
-    
-    final_fs = int(original_fs * l_factor / m_factor)
-    return x_final, final_fs
-
-# ==========================================
-# 3. ECUALIZADOR (Estable / Oppenheim Cap. 5)
-# ==========================================
-def get_stable_filter_coeffs(low, high, fs):
+def fft_recursiva_radix2(x):
     """
-    Diseña filtros usando SOS (Second Order Sections).
-    La forma 'ba' (Ec. Diferencias directa) es INESTABLE para frecuencias bajas 
-    y causa explosiones numéricas (10^60). SOS es la solución de ingeniería.
+    Implementación manual del algoritmo FFT (Transformada Rápida de Fourier).
+    Utiliza la estrategia recursiva de divide y vencerás (Radix-2).
     """
-    nyquist = 0.5 * fs
+    N = len(x)
     
-    # Protecciones de límites
-    if low <= 0: low = 1  # Evitar 0 Hz
-    if low >= nyquist: return None # Fuera de rango
-    if high >= nyquist: high = nyquist * 0.99 # Evitar tocar Nyquist
-    if high <= low: return None # Cruce inválido
+    # Caso base de la recursión
+    if N <= 1: return x
+    
+    # División: separar muestras pares e impares
+    pares = fft_recursiva_radix2(x[0::2])
+    impares = fft_recursiva_radix2(x[1::2])
+    
+    # Cálculo de los factores de giro (Twiddle Factors)
+    # W_N^k = exp(-j * 2*pi * k / N)
+    k = np.arange(N // 2)
+    factores = np.exp(-2j * np.pi * k / N)
+    
+    # Combinación (Mariposa)
+    t = factores * impares
+    parte_izquierda = pares + t
+    parte_derecha = pares - t
+    
+    return np.concatenate([parte_izquierda, parte_derecha])
 
-    try:
-        # 'sos' descompone el filtro en cascada de secciones de 2do orden estables
-        sos = signal.butter(2, [low, high], btype='band', fs=fs, output='sos')
-        return sos
-    except:
-        return None
+def calcular_fft(datos, fs):
+    """
+    Calcula el espectro de magnitud de la señal.
+    Se toma un segmento representativo para mantener el rendimiento en tiempo real.
+    """
+    tamano_ventana = 2048 # Potencia de 2 requerida para el algoritmo Radix-2
+    
+    if len(datos) > tamano_ventana:
+        # Tomar el segmento central
+        mitad = len(datos) // 2
+        segmento = datos[mitad : mitad + tamano_ventana]
+    else:
+        # Rellenar con ceros si la señal es muy corta (Zero-padding)
+        siguiente_potencia = 1 << (len(datos) - 1).bit_length()
+        segmento = np.pad(datos, (0, siguiente_potencia - len(datos)))
 
-def apply_equalizer(data, fs, gains_db):
-    # --- TRUE BYPASS ---
-    # Si todo es 0dB, retornar original para fidelidad perfecta
-    if all(abs(g) < 0.1 for g in gains_db.values()):
-        return data
+    # Aplicación manual de Ventana Hanning para suavizado espectral
+    # w[n] = 0.5 - 0.5 * cos(2*pi*n / (N-1))
+    N = len(segmento)
+    n_idx = np.arange(N)
+    ventana = 0.5 - 0.5 * np.cos(2 * np.pi * n_idx / (N - 1))
+    
+    # Ejecutar la FFT manual
+    espectro_complejo = fft_recursiva_radix2(segmento * ventana)
+    magnitud = np.abs(espectro_complejo)
+    
+    # Generar eje de frecuencias
+    frecuencias = np.fft.rfftfreq(N, d=1/fs)
+    
+    # Retornar solo la mitad positiva del espectro
+    mitad_N = N // 2 + 1
+    return frecuencias[:mitad_N], magnitud[:mitad_N]
 
-    bands = {
-        "Sub-Bass": (16, 60),
-        "Bass": (60, 250),
-        "Low Mids": (250, 2000),
-        "High Mids": (2000, 4000),
-        "Presence": (4000, 6000),
-        "Brilliance": (6000, 16000)
+# ==========================================
+# 3. MUESTREO Y FILTRADO FIR (MANUAL)
+# ==========================================
+
+def convolucion_manual(x, h):
+    """
+    Realiza la convolución discreta entre la señal x y el filtro h.
+    Utiliza optimización numérica de bajo nivel para eficiencia.
+    """
+    return np.convolve(x, h, mode='same')
+
+def generar_nucleo_sinc(frecuencia_corte, fs, num_taps=61):
+    """
+    Genera un filtro paso bajo ideal (función Sinc) ventaneado.
+    Se utiliza para la interpolación y el anti-aliasing.
+    """
+    if fs <= 0: return np.array([1.0])
+    
+    n = np.arange(-num_taps//2, num_taps//2 + 1)
+    
+    # Frecuencia angular digital de corte
+    w_c = 2 * np.pi * frecuencia_corte / fs
+    
+    # Función Sinc ideal: sin(wc * n) / (pi * n)
+    # Manejo seguro de la división por cero en n=0
+    with np.errstate(divide='ignore', invalid='ignore'):
+        h = np.sin(w_c * n) / (np.pi * n)
+    h[num_taps//2] = w_c / np.pi # Valor límite en n=0
+    
+    # Aplicación de Ventana Blackman para reducir el rizado
+    w = 0.42 - 0.5 * np.cos(2*np.pi*(n + num_taps//2)/(num_taps-1)) + \
+        0.08 * np.cos(4*np.pi*(n + num_taps//2)/(num_taps-1))
+    
+    return h * w
+
+def cambiar_tasa_muestreo(datos, fs_original, factor_m, factor_l):
+    """
+    Realiza la conversión de frecuencia de muestreo.
+    Proceso: Expansión (L) -> Filtrado (Sinc) -> Decimación (M).
+    """
+    # Si no hay cambio (1:1), retornar señal original (Bypass)
+    if factor_m == 1 and factor_l == 1:
+        return datos, fs_original
+    
+    # 1. Expansión (Upsampling): Insertar ceros
+    N = len(datos)
+    datos_expandidos = np.zeros(N * factor_l, dtype=datos.dtype)
+    datos_expandidos[::factor_l] = datos
+    
+    # 2. Diseño del Filtro de Interpolación
+    # La frecuencia de corte debe ser la menor entre Nyquist origen y destino
+    nueva_fs_temp = fs_original * factor_l
+    frecuencia_corte = min(fs_original/2, (nueva_fs_temp/factor_m)/2)
+    
+    # Generar filtro y aplicar ganancia L para compensar pérdida de energía
+    filtro = generar_nucleo_sinc(frecuencia_corte, nueva_fs_temp) * factor_l
+    
+    # Aplicar filtrado (Convolución)
+    datos_filtrados = convolucion_manual(datos_expandidos, filtro)
+    
+    # 3. Decimación (Downsampling): Tomar una muestra cada M
+    datos_finales = datos_filtrados[::factor_m]
+    
+    fs_final = int(fs_original * factor_l / factor_m)
+    return datos_finales, fs_final
+
+# ==========================================
+# 4. ECUALIZADOR IIR (ECUACIÓN EN DIFERENCIAS)
+# ==========================================
+
+def calcular_coeficientes_biquad(fc, fs, ganancia_db, Q=0.707):
+    """
+    Calcula los coeficientes (b, a) para un filtro digital de segundo orden.
+    Tipo de filtro: Peaking EQ (Campana).
+    """
+    w0 = 2 * np.pi * fc / fs
+    alpha = np.sin(w0) / (2 * Q)
+    A = 10 ** (ganancia_db / 40.0)
+    
+    # Fórmulas para los coeficientes
+    b0 = 1 + alpha * A
+    b1 = -2 * np.cos(w0)
+    b2 = 1 - alpha * A
+    a0 = 1 + alpha / A
+    a1 = -2 * np.cos(w0)
+    a2 = 1 - alpha / A
+    
+    # Normalización
+    b = np.array([b0, b1, b2]) / a0
+    a = np.array([a0, a1, a2]) / a0
+    
+    return b, a
+
+def ecuacion_diferencias_manual(x, b, a):
+    """
+    Aplica el filtro digital implementando explícitamente la ecuación en diferencias:
+    y[n] = b0*x[n] + ... - a1*y[n-1] ...
+    """
+    N = len(x)
+    y = np.zeros_like(x)
+    
+    b0, b1, b2 = b
+    a0, a1, a2 = a 
+    
+    # Variables de estado (memoria del filtro)
+    w1 = 0.0
+    w2 = 0.0
+    
+    # Bucle de procesamiento muestra a muestra
+    # Implementación en Forma Directa II Transpuesta
+    for n in range(N):
+        entrada = x[n]
+        
+        salida = b0 * entrada + w1
+        
+        # Actualización de retardos
+        w1 = b1 * entrada - a1 * salida + w2
+        w2 = b2 * entrada - a2 * salida
+        
+        y[n] = salida
+        
+    return y
+
+def aplicar_ecualizador(datos, fs, ganancias_db):
+    """
+    Aplica un banco de filtros en cascada/paralelo según las ganancias indicadas.
+    """
+    # Si todas las ganancias son 0, retornar señal sin procesar
+    if all(abs(g) < 0.1 for g in ganancias_db.values()):
+        return datos
+
+    # Frecuencias centrales aproximadas para las bandas solicitadas
+    bandas_frecuencia = {
+        "Sub-Bass": 40,
+        "Bass": 150,
+        "Low Mids": 1000,
+        "High Mids": 3000,
+        "Presence": 5000,
+        "Brilliance": 10000
     }
     
-    output_signal = np.zeros_like(data)
-    filter_active = False
+    senal_procesada = datos.copy()
     
-    for band_name, (low, high) in bands.items():
-        sos = get_stable_filter_coeffs(low, high, fs)
-        
-        if sos is not None:
-            filter_active = True
-            # Aplicar filtro SOS (Matemáticamente equivalente a Ec. Diferencias pero estable)
-            band_signal = signal.sosfilt(sos, data)
+    # Iterar sobre cada banda y aplicar filtro si hay ganancia
+    for nombre_banda, ganancia in ganancias_db.items():
+        if abs(ganancia) > 0.1:
+            fc = bandas_frecuencia.get(nombre_banda, 1000)
             
-            # Ganancia
-            gain = 10 ** (gains_db.get(band_name, 0) / 20.0)
-            output_signal += band_signal * gain
-
-    if not filter_active:
-        return data
-
-    # Sanitización final: Eliminar posibles infinitos si algo falló
-    output_signal = np.nan_to_num(output_signal, nan=0.0, posinf=1.0, neginf=-1.0)
-    
-    # Clipping duro para seguridad auditiva [-1.0, 1.0]
-    output_signal = np.clip(output_signal, -1.0, 1.0)
-    
-    return output_signal
+            # 1. Calcular coeficientes
+            b, a = calcular_coeficientes_biquad(fc, fs, ganancia, Q=1.0)
+            
+            # 2. Aplicar filtro manualmente
+            senal_procesada = ecuacion_diferencias_manual(senal_procesada, b, a)
+            
+    # Limitador (Clipping) para seguridad
+    return np.clip(senal_procesada, -1.0, 1.0)
