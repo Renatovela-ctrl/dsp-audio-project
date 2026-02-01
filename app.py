@@ -94,7 +94,7 @@ def render_player(audio_bytes, fs, unique_id):
     st.components.v1.html(html, height=85)
 
 # --- 5. INTERFAZ PRINCIPAL ---
-st.title("🎛️ Ingeniería de Señales: DSP Workbench")
+st.title("🎛️ Conversor de Frecuencia de Muestreo y Ecualizador para Se ̃nales de Audio en Tiempo Discreto - Israel Méndez, Daniel Molina, Renato Vela")
 
 # INPUT
 col_in1, col_in2 = st.sidebar.columns(2)
@@ -151,9 +151,9 @@ processed = apply_equalizer(resampled, fs_out, gains)
 st.divider()
 
 # Selector de Modo Visual
-viz_mode = st.radio("Modo Visual:", ["🛠️ Ingeniería (Interactivo)", "📖 Teórico (Oppenheim)"], horizontal=True)
+viz_mode = st.radio("Modo Visual:", ["🛠️ Análisis Completo", "📖 Teórico (50 muestras)"], horizontal=True)
 
-if viz_mode == "🛠️ Ingeniería (Interactivo)":
+if viz_mode == "🛠️ Análisis Completo":
     # --- MODO 1: PLOTLY (RÁPIDO Y CON ZOOM) ---
     
     # Opciones
