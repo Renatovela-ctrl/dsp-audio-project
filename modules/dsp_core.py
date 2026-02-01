@@ -103,56 +103,72 @@ def convolucion_manual(x, h):
     """
     return np.convolve(x, h, mode='same')
 
-def generar_nucleo_sinc(frecuencia_corte, fs, num_taps=61):
+def generar_nucleo_sinc(frecuencia_corte, fs, num_taps=101):
     """
-    Genera un filtro paso bajo ideal (función Sinc) ventaneado.
-    Se utiliza para la interpolación y el anti-aliasing.
+    Genera un filtro paso bajo ideal (Sinc) ventaneado y NORMALIZADO.
     """
     if fs <= 0: return np.array([1.0])
     
+    # Asegurar que num_taps sea impar para tener un centro perfecto
+    if num_taps % 2 == 0: num_taps += 1
+    
     n = np.arange(-num_taps//2, num_taps//2 + 1)
     
-    # Frecuencia angular digital de corte
+    # Frecuencia angular digital
     w_c = 2 * np.pi * frecuencia_corte / fs
     
-    # Función Sinc ideal: sin(wc * n) / (pi * n)
-    # Manejo seguro de la división por cero en n=0
+    # Sinc Ideal: sin(wc * n) / (pi * n)
     with np.errstate(divide='ignore', invalid='ignore'):
         h = np.sin(w_c * n) / (np.pi * n)
-    h[num_taps//2] = w_c / np.pi # Valor límite en n=0
+    h[num_taps//2] = w_c / np.pi # L'Hopital en n=0
     
-    # Aplicación de Ventana Blackman para reducir el rizado
-    w = 0.42 - 0.5 * np.cos(2*np.pi*(n + num_taps//2)/(num_taps-1)) + \
-        0.08 * np.cos(4*np.pi*(n + num_taps//2)/(num_taps-1))
+    # Ventana Blackman (mejor rechazo que Hamming)
+    w = np.blackman(len(n))
+    h = h * w
     
-    return h * w
+    # --- CORRECCIÓN CRÍTICA: NORMALIZACIÓN ---
+    # La suma de coeficientes debe ser 1.0 para mantener la ganancia unitaria (0 dB)
+    # Si no se hace esto, la señal se atenúa o amplifica aleatoriamente al cambiar M/L.
+    suma = np.sum(h)
+    if suma != 0:
+        h /= suma
+        
+    return h
 
 def cambiar_tasa_muestreo(datos, fs_original, factor_m, factor_l):
     """
-    Realiza la conversión de frecuencia de muestreo.
-    Proceso: Expansión (L) -> Filtrado (Sinc) -> Decimación (M).
+    Conversión de Tasa: Expansión -> Filtrado -> Decimación
     """
-    # Si no hay cambio (1:1), retornar señal original (Bypass)
+    # Bypass si es 1:1
     if factor_m == 1 and factor_l == 1:
         return datos, fs_original
     
-    # 1. Expansión (Upsampling): Insertar ceros
+    # 1. Expansión (Upsampling)
     N = len(datos)
     datos_expandidos = np.zeros(N * factor_l, dtype=datos.dtype)
     datos_expandidos[::factor_l] = datos
     
-    # 2. Diseño del Filtro de Interpolación
-    # La frecuencia de corte debe ser la menor entre Nyquist origen y destino
+    # 2. Filtrado (Interpolación / Anti-Aliasing)
     nueva_fs_temp = fs_original * factor_l
+    
+    # El corte debe ser la mitad de la menor frecuencia de muestreo (Nyquist)
+    # para evitar imágenes (L) y aliasing (M).
     frecuencia_corte = min(fs_original/2, (nueva_fs_temp/factor_m)/2)
     
-    # Generar filtro y aplicar ganancia L para compensar pérdida de energía
-    filtro = generar_nucleo_sinc(frecuencia_corte, nueva_fs_temp) * factor_l
+    # Aumentar taps si M o L son grandes para no perder calidad
+    # Regla empírica: más taps cuanto más estrecho sea el filtro
+    num_taps = 60 * max(factor_m, factor_l) + 1
     
-    # Aplicar filtrado (Convolución)
+    # Generar filtro normalizado (Ganancia 1)
+    filtro = generar_nucleo_sinc(frecuencia_corte, nueva_fs_temp, num_taps=num_taps)
+    
+    # Multiplicar por L para recuperar la energía perdida al insertar ceros
+    filtro *= factor_l 
+    
+    # Convolución
     datos_filtrados = convolucion_manual(datos_expandidos, filtro)
     
-    # 3. Decimación (Downsampling): Tomar una muestra cada M
+    # 3. Decimación
     datos_finales = datos_filtrados[::factor_m]
     
     fs_final = int(fs_original * factor_l / factor_m)
