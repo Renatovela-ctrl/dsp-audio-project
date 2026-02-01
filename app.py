@@ -104,6 +104,7 @@ x_n = st.session_state.senal_x
 fs_entrada = st.session_state.fs
 
 st.sidebar.markdown("---")
+# Loop desactivado por defecto
 usar_loop = st.sidebar.checkbox("Análisis por Ventana (15s)", value=False, help="Analizar solo un segmento central.")
 if usar_loop:
     centro = len(x_n) // 2
@@ -247,7 +248,7 @@ else:
     
     st.pyplot(fig_stem)
 
-    # --- ESPECTRO ANGULAR ---
+    # --- ESPECTRO ANGULAR (X, Y, Z) ---
     st.markdown("#### 📐 Espectro Angular ($-\pi$ a $\pi$)")
     
     N_fft = 1024
@@ -261,17 +262,29 @@ else:
     len_out = int(N_fft * ratio)
     if start_out + len_out > len(z_final): start_out = max(0, len(z_final) - len_out)
     
+    # Extract segments for Y and Z
+    seg_y = y_intermedia[start_out : start_out + len_out]
     seg_z = z_final[start_out : start_out + len_out]
     
-    W_in = np.fft.fftshift(np.fft.fft(seg_in))
+    # FFT Calculation
+    W_x = np.fft.fftshift(np.fft.fft(seg_in))
+    W_y = np.fft.fftshift(np.fft.fft(seg_y))
     W_z = np.fft.fftshift(np.fft.fft(seg_z))
     
-    w_axis_in = np.linspace(-np.pi, np.pi, len(W_in))
-    w_axis_out = np.linspace(-np.pi, np.pi, len(W_z))
+    # Frequency Axes
+    w_axis_x = np.linspace(-np.pi, np.pi, len(W_x))
+    w_axis_yz = np.linspace(-np.pi, np.pi, len(W_z)) # Y and Z share sampling rate
     
     fig_w, ax_w = plt.subplots(figsize=(10, 3), constrained_layout=True)
-    ax_w.plot(w_axis_in, 20*np.log10(np.abs(W_in)+1e-9), 'k--', alpha=0.4, label='x[n]')
-    ax_w.plot(w_axis_out, 20*np.log10(np.abs(W_z)+1e-9), 'g-', label='z[n]')
+    
+    # Plot X (Input)
+    ax_w.plot(w_axis_x, 20*np.log10(np.abs(W_x)+1e-9), 'k--', alpha=0.3, label='x[n]')
+    
+    # Plot Y (Resampled) - Naranja
+    ax_w.plot(w_axis_yz, 20*np.log10(np.abs(W_y)+1e-9), color='orange', alpha=0.6, label='y[n]')
+    
+    # Plot Z (Final) - Verde
+    ax_w.plot(w_axis_yz, 20*np.log10(np.abs(W_z)+1e-9), 'g-', alpha=0.8, label='z[n]')
     
     ax_w.set_xlim(-np.pi, np.pi)
     ax_w.set_xlabel(r"Frecuencia $\omega$ (rad)")
