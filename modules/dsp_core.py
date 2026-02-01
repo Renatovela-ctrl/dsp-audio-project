@@ -166,22 +166,34 @@ def aplicar_ecualizador(datos, fs, ganancias):
     
     salida = datos.copy()
     
-    # Límite de Nyquist actual (Frecuencia máxima teórica)
+    # Límite de Nyquist actual (Frecuencia máxima posible)
     limite_nyquist = fs / 2.0
     
     for nombre, ganancia in ganancias.items():
         if abs(ganancia) > 0.1:
-            fc = bandas.get(nombre, 1000)
+            fc_original = bandas.get(nombre, 1000)
             
-            # --- PROTECCIÓN CRÍTICA DE NYQUIST ---
-            # Si la banda que queremos ecualizar está fuera del rango 
-            # de la señal actual (ej: Brilliance en una señal diezmada),
-            # IGNORAMOS esa banda para evitar que el filtro explote.
-            if fc >= (limite_nyquist * 0.95): # Margen de seguridad del 95%
-                continue 
-            # -------------------------------------
+            # --- CORRECCIÓN INTELIGENTE DE BANDAS ---
+            # Si la frecuencia central está fuera, no apagamos la banda.
+            # En su lugar, la "empujamos" hacia adentro del límite válido.
+            
+            # Margen de seguridad (90% de Nyquist) para estabilidad IIR
+            techo_seguro = limite_nyquist * 0.90
+            
+            if fc_original >= techo_seguro:
+                # Si la banda original es 10kHz pero solo llegamos a 8kHz,
+                # ajustamos el filtro a ~7.2kHz para controlar los agudos restantes.
+                fc_efectiva = techo_seguro
+            else:
+                fc_efectiva = fc_original
+            
+            # Caso extremo: Si incluso ajustando, la frecuencia es ridículamente baja
+            # (ej. intentar meter Brilliance en un audio de 100Hz), ahí sí ignoramos.
+            if fc_efectiva < 10: 
+                continue
 
-            b, a = calcular_coefs_eq(fc, fs, ganancia)
+            # Calculamos coeficientes con la frecuencia ajustada
+            b, a = calcular_coefs_eq(fc_efectiva, fs, ganancia)
             salida = filtro_iir_manual(salida, b, a)
             
     return np.clip(salida, -1.0, 1.0)
