@@ -7,7 +7,7 @@
 
 **Institución:** Universidad de Cuenca  
 **Asignatura:** Sistemas Lineales y Señales  
-**Tema:** T3 - Procesamiento en TD de Señales en TC
+**Tema:** T3 - Procesamiento en TD de Señales
 
 ---
 
