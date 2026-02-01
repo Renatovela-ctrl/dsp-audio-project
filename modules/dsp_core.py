@@ -155,6 +155,7 @@ def filtro_iir_manual(x, b, a):
     return lfilter(b, a, x)
 
 def aplicar_ecualizador(datos, fs, ganancias):
+    # Bypass si todo está en 0
     if all(abs(g) < 0.1 for g in ganancias.values()):
         return datos
 
@@ -164,9 +165,22 @@ def aplicar_ecualizador(datos, fs, ganancias):
     }
     
     salida = datos.copy()
+    
+    # Límite de Nyquist actual (Frecuencia máxima teórica)
+    limite_nyquist = fs / 2.0
+    
     for nombre, ganancia in ganancias.items():
         if abs(ganancia) > 0.1:
             fc = bandas.get(nombre, 1000)
+            
+            # --- PROTECCIÓN CRÍTICA DE NYQUIST ---
+            # Si la banda que queremos ecualizar está fuera del rango 
+            # de la señal actual (ej: Brilliance en una señal diezmada),
+            # IGNORAMOS esa banda para evitar que el filtro explote.
+            if fc >= (limite_nyquist * 0.95): # Margen de seguridad del 95%
+                continue 
+            # -------------------------------------
+
             b, a = calcular_coefs_eq(fc, fs, ganancia)
             salida = filtro_iir_manual(salida, b, a)
             
