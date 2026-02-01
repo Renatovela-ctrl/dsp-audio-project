@@ -104,6 +104,7 @@ x_n = st.session_state.senal_x
 fs_entrada = st.session_state.fs
 
 st.sidebar.markdown("---")
+# Loop desactivado por defecto
 usar_loop = st.sidebar.checkbox("Análisis por Ventana (15s)", value=False, help="Analizar solo un segmento central.")
 if usar_loop:
     centro = len(x_n) // 2
@@ -114,13 +115,13 @@ if usar_loop:
 else:
     x_trabajo = x_n
 
-st.sidebar.subheader("Conversor de Tasa")
+st.sidebar.subheader("1. Conversor de Tasa (SRC)")
 c1, c2 = st.sidebar.columns(2)
 L = c1.number_input("Expansión (L)", 1, 8, 1)
 M = c2.number_input("Diezmado (M)", 1, 8, 1)
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("Ecualizador (Ganancia dB)")
+st.sidebar.subheader("2. Ecualizador (EQ)")
 llaves = ["Sub-Bass", "Bass", "Low Mids", "High Mids", "Presence", "Brilliance"]
 rangos = ["16-60 Hz", "60-250 Hz", "250-2k Hz", "2k-4k Hz", "4k-6k Hz", "6k-16k Hz"]
 ganancias = {}
@@ -128,14 +129,17 @@ ganancias = {}
 for i, (key, rango) in enumerate(zip(llaves, rangos)):
     ganancias[key] = st.sidebar.slider(f"{key} ({rango})", -15, 15, 0, key=f"g_{i}")
 
-# --- PROCESAMIENTO ---
+# --- PROCESAMIENTO EN CASCADA ---
 with st.spinner("Procesando señal..."):
-    x_remuestreada, fs_salida = conversion_tasa_muestreo(x_trabajo, fs_entrada, M, L)
-    y_n = sistema_ecualizador(x_remuestreada, fs_salida, ganancias)
+    # Etapa 1: SRC (Genera la señal intermedia w[n])
+    w_n, fs_salida = conversion_tasa_muestreo(x_trabajo, fs_entrada, M, L)
+    
+    # Etapa 2: EQ (Genera la señal final y[n])
+    y_n = sistema_ecualizador(w_n, fs_salida, ganancias)
 
-# --- VISUALIZACIÓN ---
+# --- VISUALIZACIÓN MULTI-ETAPA ---
 st.divider()
-tipo_grafica = st.radio("Modo de Análisis:", ["Espectral y Temporal", "Secuencia Discreta (40 muestras)"], horizontal=True)
+tipo_grafica = st.radio("Modo de Análisis:", ["Espectral y Temporal", "Secuencia Discreta (Stem)"], horizontal=True)
 
 if tipo_grafica == "Espectral y Temporal":
     col_eje, _ = st.columns([1, 4])
@@ -146,57 +150,82 @@ if tipo_grafica == "Espectral y Temporal":
     tab1, tab2 = st.tabs(["Dominio del Tiempo", "Dominio de la Frecuencia"])
     
     with tab1:
+        # Ejes de tiempo
         t_in = np.linspace(0, len(x_trabajo)/fs_entrada, len(x_trabajo))
-        t_out = np.linspace(0, len(y_n)/fs_salida, len(y_n))
+        t_out = np.linspace(0, len(y_n)/fs_salida, len(y_n)) # w_n y y_n comparten eje temporal
+        
         fig_t = go.Figure()
+        
+        # 1. Entrada Original
         fig_t.add_trace(go.Scatter(x=submuestreo_visual(t_in), y=submuestreo_visual(x_trabajo), 
-                                   name="x[n]", line=dict(color='gray', width=1), opacity=0.5))
+                                   name="x[n]: Entrada", line=dict(color='gray', width=1), opacity=0.4))
+        
+        # 2. Intermedia (SRC) - Solo Remuestreo
+        fig_t.add_trace(go.Scatter(x=submuestreo_visual(t_out), y=submuestreo_visual(w_n), 
+                                   name="w[n]: SRC (Intermedia)", line=dict(color='#FFD700', width=1), opacity=0.8)) # Dorado
+        
+        # 3. Salida Final (EQ)
         fig_t.add_trace(go.Scatter(x=submuestreo_visual(t_out), y=submuestreo_visual(y_n), 
-                                   name="z[n]", line=dict(color='#00ff00', width=1.5)))
-        fig_t.update_layout(template="plotly_dark", height=300, title="Señales en el Tiempo",
+                                   name="y[n]: Salida Final", line=dict(color='#00ff00', width=1.5))) # Verde brillante
+        
+        fig_t.update_layout(template="plotly_dark", height=350, title="Evolución Temporal de la Señal",
                             xaxis_title="Tiempo (s)", uirevision=st.session_state.id_sesion)
         st.plotly_chart(fig_t, use_container_width=True)
 
     with tab2:
-        f_in, mag_in = calcular_espectro_magnitud(x_trabajo[:100000], fs_entrada)
-        f_out, mag_out = calcular_espectro_magnitud(y_n[:100000], fs_salida)
+        # Cálculo de Espectros
+        limit_pts = 100000
+        f_in, mag_in = calcular_espectro_magnitud(x_trabajo[:limit_pts], fs_entrada)
+        f_src, mag_src = calcular_espectro_magnitud(w_n[:limit_pts], fs_salida) # Intermedia
+        f_out, mag_out = calcular_espectro_magnitud(y_n[:limit_pts], fs_salida) # Final
         
-        mask_in = f_in > 0.5; mask_out = f_out > 0.5
+        # Filtros visuales
+        mask_in = f_in > 0.5
+        mask_src = f_src > 0.5
+        mask_out = f_out > 0.5
+        
         db_in = 20*np.log10(mag_in[mask_in] + 1e-12)
+        db_src = 20*np.log10(mag_src[mask_src] + 1e-12)
         db_out = 20*np.log10(mag_out[mask_out] + 1e-12)
         
         fig_f = go.Figure()
+        
+        # 1. Entrada
         fig_f.add_trace(go.Scatter(x=submuestreo_visual(f_in[mask_in]) * factor_escala, y=submuestreo_visual(db_in), 
-                                   name="|X(jw)|", line=dict(color='gray'), opacity=0.6))
+                                   name="|X| Entrada", line=dict(color='gray'), opacity=0.5))
+        
+        # 2. Intermedia (Muestra el efecto del filtro antialiasing/interpolación)
+        fig_f.add_trace(go.Scatter(x=submuestreo_visual(f_src[mask_src]) * factor_escala, y=submuestreo_visual(db_src), 
+                                   name="|W| SRC (Sin EQ)", line=dict(color='#FFD700', width=1.5), opacity=0.8))
+        
+        # 3. Salida (Muestra el efecto del EQ sobre la intermedia)
         fig_f.add_trace(go.Scatter(x=submuestreo_visual(f_out[mask_out]) * factor_escala, y=submuestreo_visual(db_out), 
-                                   name="|Z(jw)|", fill='tozeroy', line=dict(color='cyan')))
+                                   name="|Y| Salida Final", fill='tozeroy', line=dict(color='cyan', width=1.5)))
         
         bandas_hz = [60, 250, 2000, 4000, 6000]
         for b_hz in bandas_hz:
             pos = b_hz * factor_escala
             fig_f.add_vline(x=pos, line_dash="dash", line_color="#FF5500", opacity=0.7)
 
-        fig_f.update_layout(template="plotly_dark", height=350, title="Análisis Espectral",
+        fig_f.update_layout(template="plotly_dark", height=350, title="Evolución Espectral (Cascada)",
                             xaxis=dict(type="log", title=f"Frecuencia ({unidades.split()[0]})"),
                             yaxis_title="Magnitud (dB)", uirevision=st.session_state.id_sesion)
         st.plotly_chart(fig_f, use_container_width=True)
 
 else:
-    # MODO TEÓRICO (STEM + ANGULAR)
+    # MODO TEÓRICO
     st.markdown("#### 🔬 Representación de Secuencias y Espectro Angular")
     
     # --- 1. STEM PLOT (TIEMPO) ---
     muestras = 40
-    # Centro de la señal (donde hay audio garantizado)
     c = len(x_trabajo) // 2
-    
-    # Datos centrados
     x_s = x_trabajo[c:c+muestras]
     
-    # Equivalente en salida
     ratio = fs_salida / fs_entrada
     c_out = int(c * ratio)
     m_out = int(muestras * ratio)
+    
+    # Mostramos Entrada vs Salida Final (lo más relevante en discreto)
     y_s = y_n[c_out : c_out + m_out]
 
     fig_stem, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 5), constrained_layout=True)
@@ -205,52 +234,43 @@ else:
     norm_y = np.max(np.abs(y_s)) if np.max(np.abs(y_s)) > 0 else 1
 
     ax1.stem(range(len(x_s)), x_s/norm_x, linefmt='k-', markerfmt='ko', basefmt='k-')
-    ax1.set_title(r"Entrada $x[n]$ (Normalizada)", fontsize=10)
+    ax1.set_title(r"Entrada $x[n]$", fontsize=10)
     ax1.grid(alpha=0.3)
 
     eje_salida = np.linspace(0, len(x_s), len(y_s))
     ax2.stem(eje_salida, y_s/norm_y, linefmt='r-', markerfmt='ro', basefmt='k-')
-    ax2.set_title(r"Salida $y[n]$ (Normalizada)", fontsize=10)
+    ax2.set_title(r"Salida Final $y[n]$", fontsize=10)
     ax2.grid(alpha=0.3)
     
     st.pyplot(fig_stem)
 
-    # --- 2. ESPECTRO ANGULAR (CORRECCIÓN: DATOS CENTRADOS) ---
+    # --- 2. ESPECTRO ANGULAR ---
     st.markdown("#### 📐 Espectro Angular ($-\pi$ a $\pi$)")
     
     N_fft = 1024
-    
-    # --- CORRECCIÓN CLAVE AQUÍ ---
-    # Antes tomábamos [:N_fft] (el inicio, que puede ser silencio).
-    # Ahora tomamos [c - 512 : c + 512] (el centro, donde hay música).
     start_idx = max(0, c - N_fft // 2)
     end_idx = min(len(x_trabajo), start_idx + N_fft)
     
-    # Segmento Entrada
     seg_in = x_trabajo[start_idx : end_idx]
-    # Relleno si faltan muestras
     if len(seg_in) < N_fft: seg_in = np.pad(seg_in, (0, N_fft - len(seg_in)))
     
-    # Segmento Salida (ajustado por ratio)
+    # Para la salida visualizamos la intermedia también para ver el corte
+    # Pero para no saturar el gráfico estático, mantenemos In vs Out Final
     start_out = int(start_idx * ratio)
-    len_out = int(N_fft * ratio) # Aproximado para visualizar
-    # Limitamos para no salir del array
-    if start_out + len_out > len(y_n):
-        start_out = max(0, len(y_n) - len_out)
+    len_out = int(N_fft * ratio)
+    if start_out + len_out > len(y_n): start_out = max(0, len(y_n) - len_out)
     
     seg_out = y_n[start_out : start_out + len_out]
-    # Relleno para salida
-    target_len_out = len(seg_out) # Usamos longitud real obtenida
     
     W_in = np.fft.fftshift(np.fft.fft(seg_in))
-    W_out = np.fft.fftshift(np.fft.fft(seg_out)) # FFT de longitud variable según resampling
+    W_out = np.fft.fftshift(np.fft.fft(seg_out))
     
     w_axis_in = np.linspace(-np.pi, np.pi, len(W_in))
     w_axis_out = np.linspace(-np.pi, np.pi, len(W_out))
     
     fig_w, ax3 = plt.subplots(figsize=(10, 3), constrained_layout=True)
-    ax3.plot(w_axis_in, 20*np.log10(np.abs(W_in)+1e-9), 'k--', alpha=0.5, label='Entrada')
-    ax3.plot(w_axis_out, 20*np.log10(np.abs(W_out)+1e-9), 'r-', label='Salida')
+    ax3.plot(w_axis_in, 20*np.log10(np.abs(W_in)+1e-9), 'k--', alpha=0.4, label='Entrada')
+    ax3.plot(w_axis_out, 20*np.log10(np.abs(W_out)+1e-9), 'c-', label='Salida Final')
     
     ax3.set_xlim(-np.pi, np.pi)
     ax3.set_xlabel(r"Frecuencia $\omega$ (rad)")
