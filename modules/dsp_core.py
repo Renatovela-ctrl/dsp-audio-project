@@ -78,6 +78,13 @@ def apply_equalizer(data, fs, gains_db):
     """
     Aplica ecualizador gráfico de 6 bandas con suma ponderada.
     """
+    
+    # Si todas las ganancias son 0 (o casi 0), devolvemos la data original
+    # sin tocarla. Esto recupera los agudos > 16kHz y evita cambios de fase.
+    if all(abs(g) < 0.1 for g in gains_db.values()):
+        return data
+    # ------------------------
+
     bands = {
         "Sub-Bass": (16, 60),
         "Bass": (60, 250),
