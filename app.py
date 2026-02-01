@@ -10,7 +10,7 @@ import uuid
 from scipy.io.wavfile import write
 from modules.dsp_core import load_audio, change_sampling_rate, apply_equalizer, compute_fft
 
-# --- 1. CONFIGURACIÓN (RESTAURADA) ---
+# --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="DSP Workbench", layout="wide", page_icon="🎛️")
 
 st.markdown("""
@@ -91,7 +91,7 @@ def render_player(audio_bytes, fs, unique_id):
     """
     st.components.v1.html(html, height=85)
 
-# --- 5. INTERFAZ PRINCIPAL (TU DISEÑO ORIGINAL) ---
+# --- 5. INTERFAZ PRINCIPAL ---
 st.title("🎛️ Conversor de Frecuencia de Muestreo y Ecualizador para Señales de Audio en Tiempo Discreto - Israel Méndez, Daniel Molina, Renato Vela")
 
 # INPUT
@@ -183,7 +183,6 @@ if viz_mode == "🛠️ Análisis Completo":
         fo, mo = compute_fft(processed[:limit], fs_out)
         
         # --- FIX 1: FILTRAR DC (0 Hz) ---
-        # Esto elimina el error visual del "infinito" en escala log
         mask_i = fi > 0.5 
         mask_o = fo > 0.5
         
@@ -204,16 +203,14 @@ if viz_mode == "🛠️ Análisis Completo":
         fig_f.add_trace(go.Scatter(x=vi_f, y=vi_m, name="In", line=dict(color='gray')))
         fig_f.add_trace(go.Scatter(x=vo_f, y=vo_m, name="Out", fill='tozeroy', line=dict(color='cyan')))
         
-        # --- FIX 2: LÍNEAS DE BANDAS ---
+        # --- FIX 2: SOLO LÍNEAS (SIN TEXTO) ---
         boundaries = [60, 250, 2000, 4000, 6000]
         for b in boundaries:
             pos = b * x_mult
+            # Solo la línea amarilla punteada
             fig_f.add_vline(x=pos, line_dash="dash", line_color="yellow", opacity=0.7)
-            if f_unit == "Hz":
-                 fig_f.add_annotation(x=pos, y=-20, text=f"{b}", showarrow=False, font=dict(color="yellow"))
 
         # --- FIX 3: RANGO DE VISUALIZACIÓN ---
-        # Forzamos el zoom a 20Hz - Nyquist para que no se vea "demasiado grande"
         min_log = np.log10(20 * x_mult)
         max_log = np.log10((fs_in/2) * x_mult)
 
@@ -222,16 +219,16 @@ if viz_mode == "🛠️ Análisis Completo":
             title=f"Espectro ({f_unit})", 
             xaxis=dict(
                 type="log", 
-                range=[min_log, max_log], # <--- AQUÍ ESTÁ EL ARREGLO DEL ZOOM
+                range=[min_log, max_log],
                 title=f"Frecuencia ({f_unit})"
             ),
-            yaxis=dict(title="Magnitud (dB)", range=[-100, 40]), # Limitamos dB para limpiar ruido
+            yaxis=dict(title="Magnitud (dB)", range=[-100, 40]), 
             uirevision=st.session_state.file_id
         )
         st.plotly_chart(fig_f, use_container_width=True)
 
 else:
-    # --- MODO 2: MATPLOTLIB (TEÓRICO / PDF STYLE) ---
+    # --- MODO 2: MATPLOTLIB ---
     st.markdown("#### 🔬 Análisis Discreto (Zoom 50 muestras)")
     
     # 1. Stem Plot (Tiempo)
@@ -265,7 +262,6 @@ else:
     st.markdown("#### 📐 Espectro Angular ($-\pi$ a $\pi$)")
     
     N_fft = 1024
-    # FFT Shiftada para ver negativos
     Win = np.fft.fftshift(np.fft.fft(work_data[:N_fft]))
     Wout = np.fft.fftshift(np.fft.fft(processed[:int(N_fft*ratio)]))
     
@@ -289,7 +285,6 @@ else:
 st.divider()
 col_out1, col_out2 = st.columns([3, 1])
 with col_out1:
-    # Preparar audio final
     audio_out = np.nan_to_num(processed)
     pk = np.max(np.abs(audio_out))
     if pk > 0: audio_out /= pk
@@ -298,12 +293,10 @@ with col_out1:
     buffer = io.BytesIO()
     write(buffer, fs_out, (audio_out * 32767).astype(np.int16))
     
-    # Player con ID único basado en archivo para no mezclar tiempos
     render_player(buffer, fs_out, st.session_state.file_id)
 
 with col_out2:
     st.download_button("💾 Descargar WAV", buffer, f"dsp_out.wav", "audio/wav")
 
-# Limpieza
 del resampled, processed, audio_out, buffer
 gc.collect()
