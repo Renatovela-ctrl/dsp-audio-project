@@ -10,128 +10,300 @@ import uuid
 from scipy.io.wavfile import write
 from modules.dsp_core import load_audio, change_sampling_rate, apply_equalizer, compute_fft
 
-# CONFIGURACIÓN
+# --- 1. CONFIGURACIÓN (RESTAURADA) ---
 st.set_page_config(page_title="DSP Workbench", layout="wide", page_icon="🎛️")
-st.markdown("""<style>.block-container { padding-top: 1rem; }</style>""", unsafe_allow_html=True)
 
-# ESTADO
+st.markdown("""
+    <style>
+    .stAlert { display: none; } 
+    .block-container { padding-top: 1rem; }
+    .dsp-monitor { 
+        background-color: #222; color: #0f0; 
+        padding: 8px 12px; border-radius: 4px; 
+        font-family: 'Consolas', monospace; font-size: 0.9em;
+        border: 1px solid #444; margin-bottom: 10px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+# --- 2. GESTIÓN DE ESTADO ---
 if 'audio_data' not in st.session_state:
     st.session_state.audio_data = None
-    st.session_state.fs = 44100
+    st.session_state.fs = 0
+    st.session_state.file_name = ""
     st.session_state.file_id = str(uuid.uuid4())
 
-# CARGA DE ARCHIVOS
-def load_new_file(data, fs):
+# --- 3. CALLBACKS DE CARGA ---
+def new_file_loaded(data, fs, name):
     st.session_state.audio_data = data
     st.session_state.fs = fs
+    st.session_state.file_name = name
     st.session_state.file_id = str(uuid.uuid4())
 
-# UI LATERAL
-st.sidebar.title("🎛️ DSP Config")
-mode = st.sidebar.radio("Fuente", ["Ejemplo", "Subir"], horizontal=True)
+def load_uploaded():
+    if st.session_state.uploader:
+        d, fs = load_audio(st.session_state.uploader)
+        new_file_loaded(d, fs, st.session_state.uploader.name)
+
+def load_example():
+    path = os.path.join("examples", st.session_state.ex_selector)
+    if os.path.exists(path):
+        d, fs = load_audio(path)
+        new_file_loaded(d, fs, st.session_state.ex_selector)
+
+# --- 4. UTILIDADES ---
+def normalize_visuals(data):
+    mx = np.max(np.abs(data))
+    if mx > 0: return data / mx
+    return data
+
+def safe_downsample(data, max_points=2000):
+    if len(data) > max_points:
+        step = int(np.ceil(len(data) / max_points))
+        return data[::step]
+    return data
+
+def render_player(audio_bytes, fs, unique_id):
+    b64 = base64.b64encode(audio_bytes.read()).decode()
+    html_id = f"audio_{unique_id}"
+    storage_key = f"time_{unique_id}"
+    
+    html = f"""
+    <div class="dsp-monitor">OUTPUT: {fs} Hz | STATUS: READY</div>
+    <audio id="{html_id}" controls autoplay style="width:100%;">
+        <source src="data:audio/wav;base64,{b64}" type="audio/wav">
+    </audio>
+    <script>
+        (function() {{
+            var a = document.getElementById('{html_id}');
+            var k = '{storage_key}';
+            a.onloadedmetadata = function() {{
+                var s = sessionStorage.getItem(k);
+                if(s && s!=="null") {{
+                    var t = parseFloat(s);
+                    if(t < a.duration) a.currentTime = t;
+                }}
+                a.play().catch(e=>console.log("Autoplay waiting"));
+            }};
+            a.ontimeupdate = function() {{ sessionStorage.setItem(k, a.currentTime); }};
+        }})();
+    </script>
+    """
+    st.components.v1.html(html, height=85)
+
+# --- 5. INTERFAZ PRINCIPAL (TU DISEÑO ORIGINAL) ---
+st.title("🎛️ Conversor de Frecuencia de Muestreo y Ecualizador para Señales de Audio en Tiempo Discreto - Israel Méndez, Daniel Molina, Renato Vela")
+
+# INPUT
+col_in1, col_in2 = st.sidebar.columns(2)
+mode = col_in1.radio("Fuente", ["Ejemplo", "Subir"], label_visibility="collapsed")
 
 if mode == "Subir":
-    upl = st.sidebar.file_uploader("WAV", type=["wav"])
-    if upl: 
-        d, fs = load_audio(upl)
-        load_new_file(d, fs)
+    st.sidebar.file_uploader("WAV File", type=["wav"], key="uploader", on_change=load_uploaded)
 else:
     if os.path.exists("examples"):
-        exs = [f for f in os.listdir("examples") if f.endswith('.wav')]
-        sel = st.sidebar.selectbox("Archivo", exs)
-        if sel:
-            d, fs = load_audio(os.path.join("examples", sel))
-            load_new_file(d, fs)
+        files = [f for f in os.listdir("examples") if f.endswith('.wav')]
+        if files:
+            st.sidebar.selectbox("Seleccionar", files, key="ex_selector", on_change=load_example)
 
 if st.session_state.audio_data is None:
-    st.warning("Carga un archivo para comenzar.")
+    st.info("⚠️ Carga una señal para iniciar.")
     st.stop()
 
-# PROCESAMIENTO
-raw = st.session_state.audio_data
+# DATOS
+raw_data = st.session_state.audio_data
 fs_in = st.session_state.fs
 
-# Loop 15s
-use_loop = st.sidebar.checkbox("Modo Loop (15s)", True)
-if use_loop and len(raw) > 15*fs_in:
-    start = len(raw)//2 - (7*fs_in)
-    raw = raw[start : start + 15*fs_in]
+# PROCESAMIENTO
+st.sidebar.markdown("---")
+use_loop = st.sidebar.checkbox("Modo Loop (15s)", value=True, help="Evita saturar la memoria.")
 
-# Controles
+if use_loop:
+    mid = len(raw_data) // 2
+    win = 15 * fs_in
+    start = max(0, mid - (win//2))
+    end = min(len(raw_data), start + win)
+    work_data = raw_data[start:end]
+else:
+    work_data = raw_data
+
+# PARÁMETROS
 c1, c2 = st.sidebar.columns(2)
-L = c1.number_input("Upsample L", 1, 8, 1)
-M = c2.number_input("Downsample M", 1, 8, 1)
+L = c1.number_input("Upsample (L)", 1, 8, 1)
+M = c2.number_input("Downsample (M)", 1, 8, 1)
 
-gains = {}
-st.sidebar.subheader("Ecualizador")
-cols = st.sidebar.columns(3)
+st.sidebar.subheader("Banco de Filtros")
+bands = ["Sub", "Bass", "LoMid", "HiMid", "Pres", "Brill"]
 keys = ["Sub-Bass", "Bass", "Low Mids", "High Mids", "Presence", "Brilliance"]
-for i, k in enumerate(keys):
-    gains[k] = cols[i%3].slider(k[:3], -15, 15, 0)
+gains = {}
+cols = st.sidebar.columns(3)
+for i, (label, k) in enumerate(zip(bands, keys)):
+    with cols[i%3]:
+        gains[k] = st.slider(label, -15, 15, 0, key=f"eq_{i}")
 
-# --- MOTOR DSP ---
-resampled, fs_out = change_sampling_rate(raw, fs_in, M, L)
+# --- DSP ENGINE ---
+resampled, fs_out = change_sampling_rate(work_data, fs_in, M, L)
 processed = apply_equalizer(resampled, fs_out, gains)
 
 # --- VISUALIZACIÓN ---
 st.divider()
-t1, t2 = st.tabs(["Tiempo", "Frecuencia"])
 
-def safe_downsample(arr, max_pts=3000):
-    if len(arr) > max_pts: return arr[::int(len(arr)/max_pts)]
-    return arr
+# Selector de Modo Visual
+viz_mode = st.radio("Modo Visual:", ["🛠️ Análisis Completo", "📖 Teórico (50 muestras)"], horizontal=True)
 
-with t1:
-    fig_t = go.Figure()
-    # Tiempo: Normalizamos solo para visualización
-    v_in = safe_downsample(raw)
-    v_out = safe_downsample(processed)
-    
-    fig_t.add_trace(go.Scatter(y=v_in, name="In", line=dict(color='gray', width=1), opacity=0.5))
-    fig_t.add_trace(go.Scatter(y=v_out, name="Out", line=dict(color='#00FF00', width=1)))
-    fig_t.update_layout(height=300, margin=dict(t=20,b=20), template="plotly_dark", title="Dominio del Tiempo")
-    st.plotly_chart(fig_t, use_container_width=True)
+if viz_mode == "🛠️ Análisis Completo":
+    col_opt, _ = st.columns([1, 4])
+    with col_opt:
+        f_unit = st.radio("Eje X:", ["Hz", "rad/s"])
+        x_mult = 2*np.pi if f_unit == "rad/s" else 1.0
 
-with t2:
-    # FFT
-    limit = 100000
-    fi, mi = compute_fft(raw[:limit], fs_in)
-    fo, mo = compute_fft(processed[:limit], fs_out)
-    
-    # --- SANITIZACIÓN CRÍTICA PARA GRÁFICOS ---
-    # 1. Eliminar 0 Hz (DC) y Frecuencias Negativas
-    mask_i = fi > 1.0 # Solo frecuencias > 1 Hz
-    mask_o = fo > 1.0
-    
-    fi, mi = fi[mask_i], mi[mask_i]
-    fo, mo = fo[mask_o], mo[mask_o]
-    
-    # 2. Conversión a dB Segura (Clip en -100 dB)
-    # Evita log(0) y valores de -300 dB que rompen la escala
-    mi_db = 20 * np.log10(np.maximum(mi, 1e-5)) 
-    mo_db = 20 * np.log10(np.maximum(mo, 1e-5))
-    
-    # 3. Downsample visual
-    fig_f = go.Figure()
-    fig_f.add_trace(go.Scatter(x=safe_downsample(fi), y=safe_downsample(mi_db), name="Original", line=dict(color='gray')))
-    fig_f.add_trace(go.Scatter(x=safe_downsample(fo), y=safe_downsample(mo_db), name="Procesada", line=dict(color='cyan')))
-    
-    # Líneas de referencia
-    for b in [60, 250, 2000, 4000, 6000]:
-        fig_f.add_vline(x=b, line_dash="dash", line_color="yellow", opacity=0.5)
+    t1, t2 = st.tabs(["Tiempo", "Frecuencia"])
 
-    fig_f.update_layout(
-        height=350, template="plotly_dark", title="Espectro (dB)",
-        xaxis=dict(type="log", title="Hz", range=[np.log10(20), np.log10(fs_in/2)]), # Zoom útil: 20Hz a Nyquist
-        yaxis=dict(title="dB", range=[-80, 20]) # Rango fijo útil para audio
-    )
-    st.plotly_chart(fig_f, use_container_width=True)
+    # Datos tiempo
+    v_in = safe_downsample(normalize_visuals(work_data))
+    v_out = safe_downsample(normalize_visuals(processed))
+    t_axis_in = np.linspace(0, len(v_in)/fs_in, len(v_in))
+    t_axis_out = np.linspace(0, len(v_out)/fs_out, len(v_out))
 
-# --- AUDIO OUT ---
-# Normalizar para reproducción
-final_audio = processed / (np.max(np.abs(processed)) + 1e-6)
-final_audio = np.clip(final_audio, -1.0, 1.0)
-buffer = io.BytesIO()
-write(buffer, fs_out, (final_audio * 32767).astype(np.int16))
+    with t1:
+        fig_t = go.Figure()
+        fig_t.add_trace(go.Scatter(x=t_axis_in, y=v_in, name="In", line=dict(color='gray', width=1), opacity=0.5))
+        fig_t.add_trace(go.Scatter(x=t_axis_out, y=v_out, name="Out", line=dict(color='#0f0', width=1.5)))
+        fig_t.update_layout(
+            template="plotly_dark", height=300, margin=dict(l=10, r=10, t=30, b=10),
+            title="Comparativa Temporal",
+            uirevision=st.session_state.file_id 
+        )
+        st.plotly_chart(fig_t, use_container_width=True)
 
-st.audio(buffer, format="audio/wav")
+    with t2:
+        # --- CÁLCULO DE FFT ---
+        limit = min(len(work_data), 100000)
+        fi, mi = compute_fft(work_data[:limit], fs_in)
+        fo, mo = compute_fft(processed[:limit], fs_out)
+        
+        # --- FIX 1: FILTRAR DC (0 Hz) ---
+        # Esto elimina el error visual del "infinito" en escala log
+        mask_i = fi > 0.5 
+        mask_o = fo > 0.5
+        
+        fi, mi = fi[mask_i], mi[mask_i]
+        fo, mo = fo[mask_o], mo[mask_o]
+        
+        # Conversión a dB segura
+        mi_db = 20*np.log10(mi + 1e-9)
+        mo_db = 20*np.log10(mo + 1e-9)
+        
+        # Downsample visual
+        vi_f = safe_downsample(fi) * x_mult
+        vi_m = safe_downsample(mi_db)
+        vo_f = safe_downsample(fo) * x_mult
+        vo_m = safe_downsample(mo_db)
+
+        fig_f = go.Figure()
+        fig_f.add_trace(go.Scatter(x=vi_f, y=vi_m, name="In", line=dict(color='gray')))
+        fig_f.add_trace(go.Scatter(x=vo_f, y=vo_m, name="Out", fill='tozeroy', line=dict(color='cyan')))
+        
+        # --- FIX 2: LÍNEAS DE BANDAS ---
+        boundaries = [60, 250, 2000, 4000, 6000]
+        for b in boundaries:
+            pos = b * x_mult
+            fig_f.add_vline(x=pos, line_dash="dash", line_color="yellow", opacity=0.7)
+            if f_unit == "Hz":
+                 fig_f.add_annotation(x=pos, y=-20, text=f"{b}", showarrow=False, font=dict(color="yellow"))
+
+        # --- FIX 3: RANGO DE VISUALIZACIÓN ---
+        # Forzamos el zoom a 20Hz - Nyquist para que no se vea "demasiado grande"
+        min_log = np.log10(20 * x_mult)
+        max_log = np.log10((fs_in/2) * x_mult)
+
+        fig_f.update_layout(
+            template="plotly_dark", height=300, margin=dict(l=10, r=10, t=30, b=10),
+            title=f"Espectro ({f_unit})", 
+            xaxis=dict(
+                type="log", 
+                range=[min_log, max_log], # <--- AQUÍ ESTÁ EL ARREGLO DEL ZOOM
+                title=f"Frecuencia ({f_unit})"
+            ),
+            yaxis=dict(title="Magnitud (dB)", range=[-100, 40]), # Limitamos dB para limpiar ruido
+            uirevision=st.session_state.file_id
+        )
+        st.plotly_chart(fig_f, use_container_width=True)
+
+else:
+    # --- MODO 2: MATPLOTLIB (TEÓRICO / PDF STYLE) ---
+    st.markdown("#### 🔬 Análisis Discreto (Zoom 50 muestras)")
+    
+    # 1. Stem Plot (Tiempo)
+    n_samples = 40
+    center = len(work_data) // 2
+    
+    slice_in = normalize_visuals(work_data[center : center+n_samples])
+    
+    # Calcular equivalente en salida
+    ratio = fs_out / fs_in
+    center_out = int(center * ratio)
+    n_out = int(n_samples * ratio)
+    slice_out = normalize_visuals(processed[center_out : center_out+n_out])
+
+    fig_stem, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 5), constrained_layout=True)
+    
+    # Entrada x[n]
+    ax1.stem(range(len(slice_in)), slice_in, linefmt='k-', markerfmt='ko', basefmt='k-')
+    ax1.set_title(r"Entrada $x[n]$", fontsize=10)
+    ax1.grid(alpha=0.3)
+    
+    # Salida y[n]
+    x_out_idx = np.linspace(0, len(slice_in), len(slice_out))
+    ax2.stem(x_out_idx, slice_out, linefmt='r-', markerfmt='ro', basefmt='k-')
+    ax2.set_title(r"Salida $y[n]$ (Interpolación/Decimación)", fontsize=10)
+    ax2.grid(alpha=0.3)
+    
+    st.pyplot(fig_stem)
+
+    # 2. Espectro Angular
+    st.markdown("#### 📐 Espectro Angular ($-\pi$ a $\pi$)")
+    
+    N_fft = 1024
+    # FFT Shiftada para ver negativos
+    Win = np.fft.fftshift(np.fft.fft(work_data[:N_fft]))
+    Wout = np.fft.fftshift(np.fft.fft(processed[:int(N_fft*ratio)]))
+    
+    w_axis_in = np.linspace(-np.pi, np.pi, len(Win))
+    w_axis_out = np.linspace(-np.pi, np.pi, len(Wout))
+    
+    fig_w, ax3 = plt.subplots(figsize=(10, 3))
+    ax3.plot(w_axis_in, 20*np.log10(np.abs(Win)+1e-9), 'k--', alpha=0.5, label='Original')
+    ax3.plot(w_axis_out, 20*np.log10(np.abs(Wout)+1e-9), 'r-', label='Procesada')
+    
+    ax3.set_xlim(-np.pi, np.pi)
+    ax3.set_xlabel(r"Frecuencia $\omega$ (rad)")
+    ax3.set_xticks([-np.pi, 0, np.pi])
+    ax3.set_xticklabels([r'$-\pi$', '0', r'$\pi$'])
+    ax3.legend()
+    ax3.grid(alpha=0.3)
+    
+    st.pyplot(fig_w)
+
+# --- OUTPUT AUDIO ---
+st.divider()
+col_out1, col_out2 = st.columns([3, 1])
+with col_out1:
+    # Preparar audio final
+    audio_out = np.nan_to_num(processed)
+    pk = np.max(np.abs(audio_out))
+    if pk > 0: audio_out /= pk
+    audio_out = np.clip(audio_out, -1.0, 1.0)
+    
+    buffer = io.BytesIO()
+    write(buffer, fs_out, (audio_out * 32767).astype(np.int16))
+    
+    # Player con ID único basado en archivo para no mezclar tiempos
+    render_player(buffer, fs_out, st.session_state.file_id)
+
+with col_out2:
+    st.download_button("💾 Descargar WAV", buffer, f"dsp_out.wav", "audio/wav")
+
+# Limpieza
+del resampled, processed, audio_out, buffer
+gc.collect()
