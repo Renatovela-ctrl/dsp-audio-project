@@ -183,35 +183,49 @@ with t2:
         fi, mi = compute_fft(work_data[:limit], fs_in)
         fo, mo = compute_fft(processed[:limit], fs_out)
         
-        # --- FIX: ELIMINAR 0 Hz (DC) ---
-        # El componente 0 Hz causa errores infinitos en escala logarítmica (log(0) = -inf)
-        # Saltamos el primer elemento con [1:]
-        fi, mi = fi[1:], mi[1:]
-        fo, mo = fo[1:], mo[1:]
-        # -------------------------------
+        # --- INGENIERÍA: FILTRADO ROBUSTO DE DOMINIO ---
+        # 1. Definir epsilon para evitar log(0)
+        epsilon = 1e-10
+        
+        # 2. Convertir a dB de forma segura
+        mi_db = 20 * np.log10(mi + epsilon)
+        mo_db = 20 * np.log10(mo + epsilon)
+        
+        # 3. MÁSCARA ESTRICTA: Eliminar frecuencias <= 0 Hz
+        # Esto previene CUALQUIER error de escala logarítmica en el eje X
+        mask_i = fi > epsilon
+        fi_clean = fi[mask_i]
+        mi_clean = mi_db[mask_i]
+        
+        mask_o = fo > epsilon
+        fo_clean = fo[mask_o]
+        mo_clean = mo_db[mask_o]
 
-        # Conversión a dB (con protección extra contra log(0))
-        mi_db = 20 * np.log10(mi + 1e-12)
-        mo_db = 20 * np.log10(mo + 1e-12)
-
-        # Downsample visual seguro
-        vi_f = safe_downsample(fi) * x_mult
-        vi_m = safe_downsample(mi_db)
-        vo_f = safe_downsample(fo) * x_mult
-        vo_m = safe_downsample(mo_db)
+        # 4. Downsample (Solo visualización)
+        # Aplicamos el downsample SOBRE los datos ya limpios
+        vi_f = safe_downsample(fi_clean) * x_mult
+        vi_m = safe_downsample(mi_clean)
+        vo_f = safe_downsample(fo_clean) * x_mult
+        vo_m = safe_downsample(mo_clean)
 
         fig_f = go.Figure()
         
-        # Trazos
-        fig_f.add_trace(go.Scatter(x=vi_f, y=vi_m, name="Original", line=dict(color='gray', width=1), opacity=0.7))
-        fig_f.add_trace(go.Scatter(x=vo_f, y=vo_m, name="Procesada", fill='tozeroy', line=dict(color='cyan', width=1.5)))
+        # Trazos (Sin fill='tozeroy' para evitar glitches gráficos en Log)
+        fig_f.add_trace(go.Scatter(x=vi_f, y=vi_m, name="Original", 
+                                   line=dict(color='gray', width=1), opacity=0.7))
+        fig_f.add_trace(go.Scatter(x=vo_f, y=vo_m, name="Procesada", 
+                                   line=dict(color='cyan', width=1.5)))
         
         # Líneas de Bandas (Amarillas)
         boundaries = [60, 250, 2000, 4000, 6000]
+        # Detectar límites para dibujar solo lo visible
+        x_min_graph = vi_f[0] if len(vi_f) > 0 else 0
+        x_max_graph = vi_f[-1] if len(vi_f) > 0 else fs_in/2
+
         for b in boundaries:
             pos = b * x_mult
-            # Verificar que la línea esté dentro del rango visible para evitar glitches
-            if pos > vi_f[0]: 
+            # Solo dibujar si la línea está DENTRO del rango de datos visible
+            if pos >= x_min_graph and pos <= x_max_graph:
                 fig_f.add_vline(x=pos, line_width=1.5, line_dash="dash", line_color="#FFFF00", opacity=0.7)
                 if f_unit == "Hz":
                     fig_f.add_annotation(x=pos, y=0, text=f"{b}", showarrow=False, yshift=10, 
@@ -225,7 +239,7 @@ with t2:
             title=f"Espectro de Magnitud ({f_unit})",
             xaxis=dict(
                 title=f"Frecuencia ({f_unit})",
-                type="log",
+                type="log", # Eje X Logarítmico seguro gracias a la máscara
                 showgrid=True, 
                 gridcolor='#333'
             ),
