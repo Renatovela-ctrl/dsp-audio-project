@@ -33,7 +33,7 @@ if 'audio_data' not in st.session_state:
     st.session_state.file_name = ""
     st.session_state.file_id = str(uuid.uuid4())
 
-# --- 3. CALLBACKS DE CARGA ---
+# --- 3. CALLBACKS ---
 def new_file_loaded(data, fs, name):
     st.session_state.audio_data = data
     st.session_state.fs = fs
@@ -114,10 +114,9 @@ if st.session_state.audio_data is None:
 raw_data = st.session_state.audio_data
 fs_in = st.session_state.fs
 
-# PROCESAMIENTO
+# LOOP
 st.sidebar.markdown("---")
-use_loop = st.sidebar.checkbox("Modo Loop (15s)", value=True, help="Evita saturar la memoria.")
-
+use_loop = st.sidebar.checkbox("Modo Loop (15s)", value=True, help="Optimiza rendimiento.")
 if use_loop:
     mid = len(raw_data) // 2
     win = 15 * fs_in
@@ -127,7 +126,7 @@ if use_loop:
 else:
     work_data = raw_data
 
-# PARÁMETROS
+# CONTROLES
 c1, c2 = st.sidebar.columns(2)
 L = c1.number_input("Upsample (L)", 1, 8, 1)
 M = c2.number_input("Downsample (M)", 1, 8, 1)
@@ -141,14 +140,12 @@ for i, (label, k) in enumerate(zip(bands, keys)):
     with cols[i%3]:
         gains[k] = st.slider(label, -15, 15, 0, key=f"eq_{i}")
 
-# --- DSP ENGINE ---
+# --- MOTOR DSP ---
 resampled, fs_out = change_sampling_rate(work_data, fs_in, M, L)
 processed = apply_equalizer(resampled, fs_out, gains)
 
 # --- VISUALIZACIÓN ---
 st.divider()
-
-# Selector de Modo Visual
 viz_mode = st.radio("Modo Visual:", ["🛠️ Análisis Completo", "📖 Teórico (50 muestras)"], horizontal=True)
 
 if viz_mode == "🛠️ Análisis Completo":
@@ -158,8 +155,8 @@ if viz_mode == "🛠️ Análisis Completo":
         x_mult = 2*np.pi if f_unit == "rad/s" else 1.0
 
     t1, t2 = st.tabs(["Tiempo", "Frecuencia"])
-
-    # Datos tiempo
+    
+    # Tiempo
     v_in = safe_downsample(normalize_visuals(work_data))
     v_out = safe_downsample(normalize_visuals(processed))
     t_axis_in = np.linspace(0, len(v_in)/fs_in, len(v_in))
@@ -171,25 +168,23 @@ if viz_mode == "🛠️ Análisis Completo":
         fig_t.add_trace(go.Scatter(x=t_axis_out, y=v_out, name="Out", line=dict(color='#0f0', width=1.5)))
         fig_t.update_layout(
             template="plotly_dark", height=300, margin=dict(l=10, r=10, t=30, b=10),
-            title="Comparativa Temporal",
-            uirevision=st.session_state.file_id 
+            title="Comparativa Temporal", uirevision=st.session_state.file_id
         )
         st.plotly_chart(fig_t, use_container_width=True)
 
     with t2:
-        # --- CÁLCULO DE FFT ---
+        # Frecuencia
         limit = min(len(work_data), 100000)
         fi, mi = compute_fft(work_data[:limit], fs_in)
         fo, mo = compute_fft(processed[:limit], fs_out)
         
-        # --- FIX 1: FILTRAR DC (0 Hz) ---
+        # Filtro de DC (0 Hz)
         mask_i = fi > 0.5 
         mask_o = fo > 0.5
-        
         fi, mi = fi[mask_i], mi[mask_i]
         fo, mo = fo[mask_o], mo[mask_o]
         
-        # Conversión a dB segura
+        # dB
         mi_db = 20*np.log10(mi + 1e-9)
         mo_db = 20*np.log10(mo + 1e-9)
         
@@ -203,58 +198,45 @@ if viz_mode == "🛠️ Análisis Completo":
         fig_f.add_trace(go.Scatter(x=vi_f, y=vi_m, name="In", line=dict(color='gray')))
         fig_f.add_trace(go.Scatter(x=vo_f, y=vo_m, name="Out", fill='tozeroy', line=dict(color='cyan')))
         
-        # --- FIX 2: LÍNEAS DE COLOR + LEYENDAS ---
+        # --- LÍNEAS VERTICALES CON ETIQUETAS ROTADAS ---
         boundaries = [60, 250, 2000, 4000, 6000]
-        # Color naranja brillante (#FF5500)
-        line_color = "#FF5500" 
+        line_color = "#FF5500" # Naranja
         
         for b in boundaries:
             pos = b * x_mult
-            
             # Línea vertical
-            fig_f.add_vline(x=pos, line_dash="dash", line_color=line_color, opacity=0.9, line_width=1.5)
+            fig_f.add_vline(x=pos, line_dash="dot", line_color=line_color, opacity=0.8)
             
-            # Leyenda (Texto) - Solo si estamos en Hz para no saturar
+            # Etiqueta VERTICAL (-90 grados)
+            # Esto evita que se extienda a la derecha
             if f_unit == "Hz":
-                 fig_f.add_annotation(
-                     x=pos, 
-                     y=1, # Arriba del todo (coordenada relativa al papel 0-1)
-                     yref="paper",
-                     text=f"<b>{b}</b>", # Texto en negrita
-                     showarrow=False, 
-                     font=dict(color=line_color, size=11),
-                     xanchor="center",
-                     yshift=5 # Un poquito más arriba
-                 )
+                fig_f.add_annotation(
+                    x=pos, 
+                    y=0.95, yref="paper", # Parte superior
+                    text=f"{b}", 
+                    showarrow=False, 
+                    font=dict(color=line_color, size=10),
+                    textangle=-90,    # ROTACIÓN CLAVE
+                    xanchor="left"    # Pegado a la línea
+                )
 
-        # --- FIX 3: AUTO-ESCALADO (Sin límites fijos) ---
         fig_f.update_layout(
             template="plotly_dark", height=300, margin=dict(l=10, r=10, t=30, b=10),
             title=f"Espectro ({f_unit})", 
-            xaxis=dict(
-                type="log", 
-                # SIN RANGE -> Auto-escalado activado
-                title=f"Frecuencia ({f_unit})"
-            ),
-            yaxis=dict(
-                title="Magnitud (dB)",
-                # SIN RANGE -> Auto-escalado activado
-            ), 
+            xaxis=dict(type="log", title=f"Frecuencia ({f_unit})"),
+            yaxis=dict(title="Magnitud (dB)"), 
             uirevision=st.session_state.file_id
         )
         st.plotly_chart(fig_f, use_container_width=True)
 
 else:
-    # --- MODO 2: MATPLOTLIB ---
+    # MODO TEÓRICO
     st.markdown("#### 🔬 Análisis Discreto (Zoom 50 muestras)")
-    
-    # 1. Stem Plot (Tiempo)
     n_samples = 40
     center = len(work_data) // 2
     
     slice_in = normalize_visuals(work_data[center : center+n_samples])
     
-    # Calcular equivalente en salida
     ratio = fs_out / fs_in
     center_out = int(center * ratio)
     n_out = int(n_samples * ratio)
@@ -262,22 +244,18 @@ else:
 
     fig_stem, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 5), constrained_layout=True)
     
-    # Entrada x[n]
     ax1.stem(range(len(slice_in)), slice_in, linefmt='k-', markerfmt='ko', basefmt='k-')
     ax1.set_title(r"Entrada $x[n]$", fontsize=10)
     ax1.grid(alpha=0.3)
     
-    # Salida y[n]
     x_out_idx = np.linspace(0, len(slice_in), len(slice_out))
     ax2.stem(x_out_idx, slice_out, linefmt='r-', markerfmt='ro', basefmt='k-')
-    ax2.set_title(r"Salida $y[n]$ (Interpolación/Decimación)", fontsize=10)
+    ax2.set_title(r"Salida $y[n]$", fontsize=10)
     ax2.grid(alpha=0.3)
     
     st.pyplot(fig_stem)
 
-    # 2. Espectro Angular
     st.markdown("#### 📐 Espectro Angular ($-\pi$ a $\pi$)")
-    
     N_fft = 1024
     Win = np.fft.fftshift(np.fft.fft(work_data[:N_fft]))
     Wout = np.fft.fftshift(np.fft.fft(processed[:int(N_fft*ratio)]))
@@ -288,17 +266,15 @@ else:
     fig_w, ax3 = plt.subplots(figsize=(10, 3))
     ax3.plot(w_axis_in, 20*np.log10(np.abs(Win)+1e-9), 'k--', alpha=0.5, label='Original')
     ax3.plot(w_axis_out, 20*np.log10(np.abs(Wout)+1e-9), 'r-', label='Procesada')
-    
     ax3.set_xlim(-np.pi, np.pi)
     ax3.set_xlabel(r"Frecuencia $\omega$ (rad)")
     ax3.set_xticks([-np.pi, 0, np.pi])
     ax3.set_xticklabels([r'$-\pi$', '0', r'$\pi$'])
     ax3.legend()
     ax3.grid(alpha=0.3)
-    
     st.pyplot(fig_w)
 
-# --- OUTPUT AUDIO ---
+# OUTPUT
 st.divider()
 col_out1, col_out2 = st.columns([3, 1])
 with col_out1:
@@ -309,11 +285,10 @@ with col_out1:
     
     buffer = io.BytesIO()
     write(buffer, fs_out, (audio_out * 32767).astype(np.int16))
-    
     render_player(buffer, fs_out, st.session_state.file_id)
 
 with col_out2:
-    st.download_button("💾 Descargar WAV", buffer, f"dsp_out.wav", "audio/wav")
+    st.download_button("💾 Descargar WAV", buffer, "dsp_out.wav", "audio/wav")
 
 del resampled, processed, audio_out, buffer
 gc.collect()
