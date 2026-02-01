@@ -44,21 +44,7 @@ Implementación propia del algoritmo de **Transformada Rápida de Fourier (FFT)*
 * **Teorema de Nyquist:** Ajuste dinámico de filtros para prevenir aliasing cuando $F_s$ disminuye.
 * **Frecuencia Angular Normalizada:** Visualización opcional en $rad/s$, donde $\pi$ representa la frecuencia de Nyquist.
 * **Simetría Conjugada:** Aprovechamiento de la propiedad de paridad en señales reales para el análisis espectral.
-
-## 📦 Requisitos e Instalación
-
-1.  **Clonar el repositorio:**
-    ```bash
-    git clone [https://github.com/tu-usuario/nombre-del-repo.git](https://github.com/tu-usuario/nombre-del-repo.git)
-    ```
-2.  **Instalar dependencias:**
-    ```bash
-    pip install streamlit numpy plotly soundfile scipy matplotlib
-    ```
-3.  **Ejecutar la aplicación:**
-    ```bash
-    streamlit run app.py
-    ```
+  
 
 ## 📋 Estructura de Archivos
 
@@ -67,4 +53,4 @@ Implementación propia del algoritmo de **Transformada Rápida de Fourier (FFT)*
 * `examples/`: Directorio de archivos `.wav` para pruebas.
 
 ---
-**Nota Académica:** Este proyecto evita el uso de funciones de alto nivel para el procesamiento (como `resample` o `filtfilt`), optando por implementaciones manuales que demuestran la comprensión de la teoría de Señales y Sistemas.
+**Nota Académica:** Este proyecto evita el uso de funciones de alto nivel para el procesamiento (como `resample` o `filtfilt`), optando por implementaciones manuales.
