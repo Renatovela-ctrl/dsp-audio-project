@@ -183,11 +183,18 @@ with t2:
         fi, mi = compute_fft(work_data[:limit], fs_in)
         fo, mo = compute_fft(processed[:limit], fs_out)
         
-        # Conversión a dB
-        mi_db = 20*np.log10(mi + 1e-9)
-        mo_db = 20*np.log10(mo + 1e-9)
+        # --- FIX: ELIMINAR 0 Hz (DC) ---
+        # El componente 0 Hz causa errores infinitos en escala logarítmica (log(0) = -inf)
+        # Saltamos el primer elemento con [1:]
+        fi, mi = fi[1:], mi[1:]
+        fo, mo = fo[1:], mo[1:]
+        # -------------------------------
 
-        # Downsample visual para no saturar el navegador
+        # Conversión a dB (con protección extra contra log(0))
+        mi_db = 20 * np.log10(mi + 1e-12)
+        mo_db = 20 * np.log10(mo + 1e-12)
+
+        # Downsample visual seguro
         vi_f = safe_downsample(fi) * x_mult
         vi_m = safe_downsample(mi_db)
         vo_f = safe_downsample(fo) * x_mult
@@ -195,37 +202,22 @@ with t2:
 
         fig_f = go.Figure()
         
-        # Trazos de señal
+        # Trazos
         fig_f.add_trace(go.Scatter(x=vi_f, y=vi_m, name="Original", line=dict(color='gray', width=1), opacity=0.7))
         fig_f.add_trace(go.Scatter(x=vo_f, y=vo_m, name="Procesada", fill='tozeroy', line=dict(color='cyan', width=1.5)))
         
-        # --- LÍNEAS DE SEPARACIÓN DE BANDAS ---
+        # Líneas de Bandas (Amarillas)
         boundaries = [60, 250, 2000, 4000, 6000]
-        
         for b in boundaries:
             pos = b * x_mult
-            # Línea vertical amarilla
-            fig_f.add_vline(
-                x=pos, 
-                line_width=1.5, 
-                line_dash="dash", 
-                line_color="#FFFF00",
-                opacity=0.7
-            )
-            # Etiqueta de texto (solo si está en Hz para no amontonar)
-            if f_unit == "Hz":
-                fig_f.add_annotation(
-                    x=pos, 
-                    y=0, # Posición en Y (ajustable)
-                    text=f"{b}", 
-                    showarrow=False, 
-                    yshift=10,
-                    font=dict(color="#FFFF00", size=10),
-                    textangle=-90 # Texto vertical para ocupar menos espacio
-                )
-        # --------------------------------------
+            # Verificar que la línea esté dentro del rango visible para evitar glitches
+            if pos > vi_f[0]: 
+                fig_f.add_vline(x=pos, line_width=1.5, line_dash="dash", line_color="#FFFF00", opacity=0.7)
+                if f_unit == "Hz":
+                    fig_f.add_annotation(x=pos, y=0, text=f"{b}", showarrow=False, yshift=10, 
+                                        font=dict(color="#FFFF00", size=10), textangle=-90)
 
-        # Layout AUTOMÁTICO (Sin rangos fijos)
+        # Layout
         fig_f.update_layout(
             template="plotly_dark", 
             height=350, 
@@ -233,18 +225,13 @@ with t2:
             title=f"Espectro de Magnitud ({f_unit})",
             xaxis=dict(
                 title=f"Frecuencia ({f_unit})",
-                type="log", # Mantenemos logarítmico porque es estándar en audio
+                type="log",
                 showgrid=True, 
                 gridcolor='#333'
             ),
-            yaxis=dict(
-                title="Magnitud (dB)",
-                # range=None,  <-- COMENTADO: Dejamos que Plotly decida
-                showgrid=True, 
-                gridcolor='#333'
-            ),
+            yaxis=dict(title="Magnitud (dB)", showgrid=True, gridcolor='#333'),
             legend=dict(x=0, y=1, bgcolor='rgba(0,0,0,0.5)'),
-            uirevision=st.session_state.file_id # Mantiene el zoom manual del usuario si cambia sliders
+            uirevision=st.session_state.file_id
         )
         st.plotly_chart(fig_f, use_container_width=True)
 
