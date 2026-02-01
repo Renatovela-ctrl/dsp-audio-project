@@ -62,7 +62,6 @@ def callback_carga_ejemplo():
 # --- 4. UTILIDADES ---
 def generar_reproductor_html(audio_buffer, fs, id_unico):
     b64 = base64.b64encode(audio_buffer.read()).decode()
-    # CORRECCIÓN: Texto limpio, sin "Estado: LTI..."
     html = f"""
     <div class="dsp-monitor">Fs_salida: {fs} Hz</div>
     <audio controls autoplay style="width:100%;">
@@ -105,7 +104,6 @@ x_n = st.session_state.senal_x
 fs_entrada = st.session_state.fs
 
 st.sidebar.markdown("---")
-# Loop desactivado por defecto
 usar_loop = st.sidebar.checkbox("Análisis por Ventana (15s)", value=False, help="Analizar solo un segmento central.")
 if usar_loop:
     centro = len(x_n) // 2
@@ -123,7 +121,6 @@ M = c2.number_input("Diezmado (M)", 1, 8, 1)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("Ecualizador (Ganancia dB)")
-# Sliders verticales (uno por fila)
 llaves = ["Sub-Bass", "Bass", "Low Mids", "High Mids", "Presence", "Brilliance"]
 rangos = ["16-60 Hz", "60-250 Hz", "250-2k Hz", "2k-4k Hz", "4k-6k Hz", "6k-16k Hz"]
 ganancias = {}
@@ -190,19 +187,20 @@ else:
     
     # --- 1. STEM PLOT (TIEMPO) ---
     muestras = 40
+    # Centro de la señal (donde hay audio garantizado)
     c = len(x_trabajo) // 2
+    
+    # Datos centrados
     x_s = x_trabajo[c:c+muestras]
     
-    # Calcular ventana equivalente en salida
+    # Equivalente en salida
     ratio = fs_salida / fs_entrada
     c_out = int(c * ratio)
     m_out = int(muestras * ratio)
     y_s = y_n[c_out : c_out + m_out]
 
-    # CORRECCIÓN: constrained_layout=True para evitar superposición
     fig_stem, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 5), constrained_layout=True)
     
-    # Normalización visual local
     norm_x = np.max(np.abs(x_s)) if np.max(np.abs(x_s)) > 0 else 1
     norm_y = np.max(np.abs(y_s)) if np.max(np.abs(y_s)) > 0 else 1
 
@@ -217,13 +215,35 @@ else:
     
     st.pyplot(fig_stem)
 
-    # --- 2. ESPECTRO ANGULAR (CORRECCIÓN: AGREGADO DE NUEVO) ---
+    # --- 2. ESPECTRO ANGULAR (CORRECCIÓN: DATOS CENTRADOS) ---
     st.markdown("#### 📐 Espectro Angular ($-\pi$ a $\pi$)")
     
-    # Usamos np.fft solo para esta visualización estática rápida teórica
     N_fft = 1024
-    W_in = np.fft.fftshift(np.fft.fft(x_trabajo[:N_fft]))
-    W_out = np.fft.fftshift(np.fft.fft(y_n[:int(N_fft*ratio)]))
+    
+    # --- CORRECCIÓN CLAVE AQUÍ ---
+    # Antes tomábamos [:N_fft] (el inicio, que puede ser silencio).
+    # Ahora tomamos [c - 512 : c + 512] (el centro, donde hay música).
+    start_idx = max(0, c - N_fft // 2)
+    end_idx = min(len(x_trabajo), start_idx + N_fft)
+    
+    # Segmento Entrada
+    seg_in = x_trabajo[start_idx : end_idx]
+    # Relleno si faltan muestras
+    if len(seg_in) < N_fft: seg_in = np.pad(seg_in, (0, N_fft - len(seg_in)))
+    
+    # Segmento Salida (ajustado por ratio)
+    start_out = int(start_idx * ratio)
+    len_out = int(N_fft * ratio) # Aproximado para visualizar
+    # Limitamos para no salir del array
+    if start_out + len_out > len(y_n):
+        start_out = max(0, len(y_n) - len_out)
+    
+    seg_out = y_n[start_out : start_out + len_out]
+    # Relleno para salida
+    target_len_out = len(seg_out) # Usamos longitud real obtenida
+    
+    W_in = np.fft.fftshift(np.fft.fft(seg_in))
+    W_out = np.fft.fftshift(np.fft.fft(seg_out)) # FFT de longitud variable según resampling
     
     w_axis_in = np.linspace(-np.pi, np.pi, len(W_in))
     w_axis_out = np.linspace(-np.pi, np.pi, len(W_out))
