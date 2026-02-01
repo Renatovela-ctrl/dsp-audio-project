@@ -62,8 +62,9 @@ def callback_carga_ejemplo():
 # --- 4. UTILIDADES ---
 def generar_reproductor_html(audio_buffer, fs, id_unico):
     b64 = base64.b64encode(audio_buffer.read()).decode()
+    # CORRECCIÓN: Texto limpio, sin "Estado: LTI..."
     html = f"""
-    <div class="dsp-monitor">Fs_salida: {fs} Hz | Estado: SISTEMA LTI ESTABLE</div>
+    <div class="dsp-monitor">Fs_salida: {fs} Hz</div>
     <audio controls autoplay style="width:100%;">
         <source src="data:audio/wav;base64,{b64}" type="audio/wav">
     </audio>
@@ -104,7 +105,7 @@ x_n = st.session_state.senal_x
 fs_entrada = st.session_state.fs
 
 st.sidebar.markdown("---")
-# AJUSTE: Desactivado por defecto (value=False)
+# Loop desactivado por defecto
 usar_loop = st.sidebar.checkbox("Análisis por Ventana (15s)", value=False, help="Analizar solo un segmento central.")
 if usar_loop:
     centro = len(x_n) // 2
@@ -122,7 +123,7 @@ M = c2.number_input("Diezmado (M)", 1, 8, 1)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("Ecualizador (Ganancia dB)")
-# AJUSTE: Barras una encima de otra (vertical)
+# Sliders verticales (uno por fila)
 llaves = ["Sub-Bass", "Bass", "Low Mids", "High Mids", "Presence", "Brilliance"]
 rangos = ["16-60 Hz", "60-250 Hz", "250-2k Hz", "2k-4k Hz", "4k-6k Hz", "6k-16k Hz"]
 ganancias = {}
@@ -184,18 +185,62 @@ if tipo_grafica == "Espectral y Temporal":
         st.plotly_chart(fig_f, use_container_width=True)
 
 else:
-    st.markdown("#### 🔬 Secuencias en Tiempo Discreto (Zoom)")
+    # MODO TEÓRICO (STEM + ANGULAR)
+    st.markdown("#### 🔬 Representación de Secuencias y Espectro Angular")
+    
+    # --- 1. STEM PLOT (TIEMPO) ---
     muestras = 40
     c = len(x_trabajo) // 2
     x_s = x_trabajo[c:c+muestras]
-    y_s = y_n[int(c*fs_salida/fs_entrada):int((c+muestras)*fs_salida/fs_entrada)]
+    
+    # Calcular ventana equivalente en salida
+    ratio = fs_salida / fs_entrada
+    c_out = int(c * ratio)
+    m_out = int(muestras * ratio)
+    y_s = y_n[c_out : c_out + m_out]
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 5))
-    ax1.stem(range(len(x_s)), x_s/np.max(np.abs(x_s)), linefmt='k-', markerfmt='ko', basefmt='k-')
-    ax1.set_title("Entrada x[n]")
-    ax2.stem(np.linspace(0, len(x_s), len(y_s)), y_s/np.max(np.abs(y_s)), linefmt='r-', markerfmt='ro', basefmt='k-')
-    ax2.set_title("Salida y[n]")
-    st.pyplot(fig)
+    # CORRECCIÓN: constrained_layout=True para evitar superposición
+    fig_stem, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 5), constrained_layout=True)
+    
+    # Normalización visual local
+    norm_x = np.max(np.abs(x_s)) if np.max(np.abs(x_s)) > 0 else 1
+    norm_y = np.max(np.abs(y_s)) if np.max(np.abs(y_s)) > 0 else 1
+
+    ax1.stem(range(len(x_s)), x_s/norm_x, linefmt='k-', markerfmt='ko', basefmt='k-')
+    ax1.set_title(r"Entrada $x[n]$ (Normalizada)", fontsize=10)
+    ax1.grid(alpha=0.3)
+
+    eje_salida = np.linspace(0, len(x_s), len(y_s))
+    ax2.stem(eje_salida, y_s/norm_y, linefmt='r-', markerfmt='ro', basefmt='k-')
+    ax2.set_title(r"Salida $y[n]$ (Normalizada)", fontsize=10)
+    ax2.grid(alpha=0.3)
+    
+    st.pyplot(fig_stem)
+
+    # --- 2. ESPECTRO ANGULAR (CORRECCIÓN: AGREGADO DE NUEVO) ---
+    st.markdown("#### 📐 Espectro Angular ($-\pi$ a $\pi$)")
+    
+    # Usamos np.fft solo para esta visualización estática rápida teórica
+    N_fft = 1024
+    W_in = np.fft.fftshift(np.fft.fft(x_trabajo[:N_fft]))
+    W_out = np.fft.fftshift(np.fft.fft(y_n[:int(N_fft*ratio)]))
+    
+    w_axis_in = np.linspace(-np.pi, np.pi, len(W_in))
+    w_axis_out = np.linspace(-np.pi, np.pi, len(W_out))
+    
+    fig_w, ax3 = plt.subplots(figsize=(10, 3), constrained_layout=True)
+    ax3.plot(w_axis_in, 20*np.log10(np.abs(W_in)+1e-9), 'k--', alpha=0.5, label='Entrada')
+    ax3.plot(w_axis_out, 20*np.log10(np.abs(W_out)+1e-9), 'r-', label='Salida')
+    
+    ax3.set_xlim(-np.pi, np.pi)
+    ax3.set_xlabel(r"Frecuencia $\omega$ (rad)")
+    ax3.set_xticks([-np.pi, 0, np.pi])
+    ax3.set_xticklabels([r'$-\pi$', '0', r'$\pi$'])
+    ax3.set_ylabel("Magnitud (dB)")
+    ax3.legend(loc='upper right')
+    ax3.grid(alpha=0.3)
+    
+    st.pyplot(fig_w)
 
 # --- REPRODUCCIÓN Y DESCARGA ---
 st.divider()
