@@ -203,26 +203,43 @@ if viz_mode == "🛠️ Análisis Completo":
         fig_f.add_trace(go.Scatter(x=vi_f, y=vi_m, name="In", line=dict(color='gray')))
         fig_f.add_trace(go.Scatter(x=vo_f, y=vo_m, name="Out", fill='tozeroy', line=dict(color='cyan')))
         
-        # --- FIX 2: SOLO LÍNEAS (SIN TEXTO) ---
+        # --- FIX 2: LÍNEAS DE COLOR + LEYENDAS ---
         boundaries = [60, 250, 2000, 4000, 6000]
+        # Color naranja brillante (#FF5500)
+        line_color = "#FF5500" 
+        
         for b in boundaries:
             pos = b * x_mult
-            # Solo la línea amarilla punteada
-            fig_f.add_vline(x=pos, line_dash="dash", line_color="yellow", opacity=0.7)
+            
+            # Línea vertical
+            fig_f.add_vline(x=pos, line_dash="dash", line_color=line_color, opacity=0.9, line_width=1.5)
+            
+            # Leyenda (Texto) - Solo si estamos en Hz para no saturar
+            if f_unit == "Hz":
+                 fig_f.add_annotation(
+                     x=pos, 
+                     y=1, # Arriba del todo (coordenada relativa al papel 0-1)
+                     yref="paper",
+                     text=f"<b>{b}</b>", # Texto en negrita
+                     showarrow=False, 
+                     font=dict(color=line_color, size=11),
+                     xanchor="center",
+                     yshift=5 # Un poquito más arriba
+                 )
 
-        # --- FIX 3: RANGO DE VISUALIZACIÓN ---
-        min_log = np.log10(20 * x_mult)
-        max_log = np.log10((fs_in/2) * x_mult)
-
+        # --- FIX 3: AUTO-ESCALADO (Sin límites fijos) ---
         fig_f.update_layout(
             template="plotly_dark", height=300, margin=dict(l=10, r=10, t=30, b=10),
             title=f"Espectro ({f_unit})", 
             xaxis=dict(
                 type="log", 
-                range=[min_log, max_log],
+                # SIN RANGE -> Auto-escalado activado
                 title=f"Frecuencia ({f_unit})"
             ),
-            yaxis=dict(title="Magnitud (dB)", range=[-100, 40]), 
+            yaxis=dict(
+                title="Magnitud (dB)",
+                # SIN RANGE -> Auto-escalado activado
+            ), 
             uirevision=st.session_state.file_id
         )
         st.plotly_chart(fig_f, use_container_width=True)
