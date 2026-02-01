@@ -178,6 +178,7 @@ if viz_mode == "🛠️ Análisis Completo":
         st.plotly_chart(fig_t, use_container_width=True)
 
 with t2:
+        # Calcular FFT
         limit = min(len(work_data), 100000)
         fi, mi = compute_fft(work_data[:limit], fs_in)
         fo, mo = compute_fft(processed[:limit], fs_out)
@@ -186,66 +187,64 @@ with t2:
         mi_db = 20*np.log10(mi + 1e-9)
         mo_db = 20*np.log10(mo + 1e-9)
 
-        # Downsample visual
+        # Downsample visual para no saturar el navegador
         vi_f = safe_downsample(fi) * x_mult
         vi_m = safe_downsample(mi_db)
         vo_f = safe_downsample(fo) * x_mult
         vo_m = safe_downsample(mo_db)
 
         fig_f = go.Figure()
-        fig_f.add_trace(go.Scatter(x=vi_f, y=vi_m, name="Original", line=dict(color='gray', width=1)))
+        
+        # Trazos de señal
+        fig_f.add_trace(go.Scatter(x=vi_f, y=vi_m, name="Original", line=dict(color='gray', width=1), opacity=0.7))
         fig_f.add_trace(go.Scatter(x=vo_f, y=vo_m, name="Procesada", fill='tozeroy', line=dict(color='cyan', width=1.5)))
         
-        # --- LÍNEAS DE BANDAS MÁS VISIBLES ---
+        # --- LÍNEAS DE SEPARACIÓN DE BANDAS ---
         boundaries = [60, 250, 2000, 4000, 6000]
+        
         for b in boundaries:
             pos = b * x_mult
-            # Línea Amarilla Brillante y más gruesa
-            fig_f.add_vline(x=pos, line_width=2, line_dash="dot", line_color="#FFFF00", opacity=0.8)
-            # Etiqueta solo si estamos en Hz para no saturar
+            # Línea vertical amarilla
+            fig_f.add_vline(
+                x=pos, 
+                line_width=1.5, 
+                line_dash="dash", 
+                line_color="#FFFF00",
+                opacity=0.7
+            )
+            # Etiqueta de texto (solo si está en Hz para no amontonar)
             if f_unit == "Hz":
                 fig_f.add_annotation(
-                    x=pos, y=0.95, yref="paper", # Posición relativa arriba
-                    text=f"<b>{b}</b>", 
+                    x=pos, 
+                    y=0, # Posición en Y (ajustable)
+                    text=f"{b}", 
                     showarrow=False, 
+                    yshift=10,
                     font=dict(color="#FFFF00", size=10),
-                    xanchor="left"
+                    textangle=-90 # Texto vertical para ocupar menos espacio
                 )
+        # --------------------------------------
 
-        # --- AJUSTE DE RANGO FIJO (La clave para ver bien el espectro) ---
-        # Audio útil: 20 Hz a Nyquist
-        min_f = 20 * x_mult
-        max_f = (fs_in / 2) * x_mult
-        
-        # Selector de escala opcional
-        scale_col, _ = st.columns([1,3])
-        with scale_col:
-            scale_type = st.radio("Escala:", ["Logarítmica", "Lineal"], horizontal=True, label_visibility="collapsed")
-        
-        x_type = "log" if scale_type == "Logarítmica" else "linear"
-        
-        # Calcular rangos para Plotly
-        if x_type == "log":
-            x_range = [np.log10(min_f), np.log10(max_f)]
-        else:
-            x_range = [0, max_f]
-
+        # Layout AUTOMÁTICO (Sin rangos fijos)
         fig_f.update_layout(
-            template="plotly_dark", height=350, margin=dict(l=10, r=10, t=30, b=10),
+            template="plotly_dark", 
+            height=350, 
+            margin=dict(l=10, r=10, t=30, b=10),
             title=f"Espectro de Magnitud ({f_unit})",
             xaxis=dict(
                 title=f"Frecuencia ({f_unit})",
-                type=x_type,
-                range=x_range, # <--- ESTO FIXEA EL ZOOM
-                showgrid=True, gridcolor='#333'
+                type="log", # Mantenemos logarítmico porque es estándar en audio
+                showgrid=True, 
+                gridcolor='#333'
             ),
             yaxis=dict(
                 title="Magnitud (dB)",
-                range=[-80, 10], # <--- Rango dinámico típico de música (-80dB a +10dB)
-                showgrid=True, gridcolor='#333'
+                # range=None,  <-- COMENTADO: Dejamos que Plotly decida
+                showgrid=True, 
+                gridcolor='#333'
             ),
             legend=dict(x=0, y=1, bgcolor='rgba(0,0,0,0.5)'),
-            uirevision=st.session_state.file_id
+            uirevision=st.session_state.file_id # Mantiene el zoom manual del usuario si cambia sliders
         )
         st.plotly_chart(fig_f, use_container_width=True)
 
