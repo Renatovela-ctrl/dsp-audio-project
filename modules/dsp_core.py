@@ -1,142 +1,194 @@
 import numpy as np
 import soundfile as sf
+import scipy.signal as signal # Únicamente para el motor de la ecuación en diferencias
 
-# ==========================================
-# 1. GESTIÓN DE AUDIO (I/O)
-# ==========================================
-def cargar_audio(buffer_archivo):
+# ==============================================================================
+# MÓDULO DE PROCESAMIENTO DE SEÑALES (DSP CORE)
+# Basado en la teoría de Sistemas Lineales e Invariantes en el Tiempo (LTI)
+# ==============================================================================
+
+def cargar_senal_audio(buffer_archivo):
+    """
+    Carga la señal discreta x[n] desde un archivo de audio.
+    
+    Procesamiento:
+    1. Lectura de muestras.
+    2. Conversión a monoaural (promedio de canales).
+    3. Normalización de amplitud para garantizar |x[n]| <= 1.
+    """
     try:
-        datos, fs = sf.read(buffer_archivo)
-        if len(datos.shape) > 1:
-            datos = datos.mean(axis=1)
-        datos = datos.astype(np.float32)
+        x_n, fs = sf.read(buffer_archivo)
         
-        # Normalización segura
-        max_valor = np.max(np.abs(datos))
-        if max_valor > 1e-6:
-            datos = datos / max_valor
-        return datos, fs
+        # Si es estéreo, promediamos para obtener x[n] mono
+        if len(x_n.shape) > 1:
+            x_n = x_n.mean(axis=1)
+            
+        x_n = x_n.astype(np.float32)
+        
+        # Normalización (Scaling)
+        max_amplitud = np.max(np.abs(x_n))
+        if max_amplitud > 1e-6:
+            x_n = x_n / max_amplitud
+            
+        return x_n, fs
     except:
         return np.zeros(100, dtype=np.float32), 44100
 
 # ==========================================
-# 2. TRANSFORMADA DE FOURIER (FFT MANUAL)
+# ANÁLISIS EN FRECUENCIA (CAP. 9 OPPENHEIM)
 # ==========================================
-def fft_recursiva_radix2(x):
-    """Implementación manual Radix-2."""
+
+def fft_diezmado_en_tiempo(x):
+    """
+    Implementación manual del algoritmo FFT (Transformada Rápida de Fourier).
+    Utiliza la técnica de 'Diezmado en el Tiempo' (Decimation-in-Time) Radix-2.
+    
+    Base Teórica:
+    Descompone la DFT de N puntos en dos DFTs de N/2 puntos (muestras pares e impares).
+    X[k] = Par[k] + W_N^k * Impar[k]
+    Donde W_N^k es el factor de giro (Twiddle Factor).
+    """
     N = len(x)
     if N <= 1: return x
     
-    pares = fft_recursiva_radix2(x[0::2])
-    impares = fft_recursiva_radix2(x[1::2])
+    # División (Divide y Vencerás)
+    pares = fft_diezmado_en_tiempo(x[0::2])
+    impares = fft_diezmado_en_tiempo(x[1::2])
     
+    # Cálculo de Factores de Giro: W_N^k = e^(-j * 2*pi * k / N)
     k = np.arange(N // 2)
-    factores = np.exp(-2j * np.pi * k / N)
+    W_N = np.exp(-2j * np.pi * k / N)
     
-    t = factores * impares
-    return np.concatenate([pares + t, pares - t])
+    # Combinación (Mariposa)
+    t = W_N * impares
+    X_k = np.concatenate([pares + t, pares - t])
+    
+    return X_k
 
-def calcular_fft(datos, fs):
-    tamano_ventana = 2048 
-    if len(datos) > tamano_ventana:
-        mitad = len(datos) // 2
-        segmento = datos[mitad : mitad + tamano_ventana]
+def calcular_espectro_magnitud(x_n, fs):
+    """
+    Calcula la Magnitud del Espectro |X(jw)| o |X[k]| usando ventaneo.
+    """
+    # Seleccionamos un segmento representativo para la visualización (Ventaneo)
+    # Esto equivale a multiplicar x[n] por una ventana rectangular o Hanning w[n].
+    N_ventana = 2048 
+    
+    if len(x_n) > N_ventana:
+        mitad = len(x_n) // 2
+        segmento = x_n[mitad : mitad + N_ventana]
     else:
-        # Zero padding a la siguiente potencia de 2
-        siguiente_potencia = 1 << (len(datos) - 1).bit_length()
-        segmento = np.pad(datos, (0, siguiente_potencia - len(datos)))
+        # Zero-padding si la señal es muy corta
+        sig_potencia_2 = 1 << (len(x_n) - 1).bit_length()
+        segmento = np.pad(x_n, (0, sig_potencia_2 - len(x_n)))
 
+    # Aplicación de Ventana Hanning para reducir la Fuga Espectral (Spectral Leakage)
     N = len(segmento)
-    ventana = 0.5 - 0.5 * np.cos(2 * np.pi * np.arange(N) / (N - 1))
+    n = np.arange(N)
+    w_n = 0.5 - 0.5 * np.cos(2 * np.pi * n / (N - 1))
     
-    espectro = fft_recursiva_radix2(segmento * ventana)
-    magnitud = np.abs(espectro)
-    frecuencias = np.fft.rfftfreq(N, d=1/fs) # Eje auxiliar
+    # FFT Manual
+    X_k = fft_diezmado_en_tiempo(segmento * w_n)
+    magnitud = np.abs(X_k)
     
+    # Eje de frecuencias (k * fs / N)
+    frecuencias = np.fft.rfftfreq(N, d=1/fs) 
+    
+    # Retornamos solo la parte positiva del espectro (simetría conjugada de señales reales)
     mitad_N = N // 2 + 1
     return frecuencias[:mitad_N], magnitud[:mitad_N]
 
 # ==========================================
-# 3. MUESTREO Y CONVOLUCIÓN (NÚCLEO CORREGIDO)
+# MUESTREO Y CONVOLUCIÓN (CAP. 4 Y 7 OPPENHEIM)
 # ==========================================
 
-def generar_filtro_sinc_normalizado(corte_norm, num_taps):
+def generar_respuesta_impulso_sinc(w_c_norm, L_taps):
     """
-    Genera un filtro Sinc basado en frecuencia normalizada (0.0 a 1.0).
-    corte_norm: Frecuencia de corte relativa a Nyquist (fs/2).
-                Ej: 0.5 significa corte en fs/4.
+    Genera la respuesta al impulso h[n] de un Filtro Paso Bajo Ideal.
+    
+    Teoría:
+    h[n] = [sin(wc * n) / (pi * n)] * w[n]
+    Donde 'wc' es la frecuencia de corte angular y 'w[n]' es una ventana (Blackman)
+    para truncar la respuesta infinita y hacer el filtro causal y realizable (FIR).
     """
-    # Asegurar taps impares para alineación de fase perfecta
-    if num_taps % 2 == 0: num_taps += 1
+    # Aseguramos simetría (Fase Lineal) con número impar de coeficientes
+    if L_taps % 2 == 0: L_taps += 1
     
-    n = np.arange(-(num_taps // 2), (num_taps // 2) + 1)
+    n = np.arange(-(L_taps // 2), (L_taps // 2) + 1)
     
-    # Sinc Ideal: sin(pi * wc * n) / (pi * n)
-    # Nota: np.sinc(x) calcula sin(pi*x)/(pi*x)
-    h = np.sinc(corte_norm * n)
+    # Función Sinc (sin(pi*x)/(pi*x)) normalizada
+    # w_c_norm es la frecuencia de corte relativa a Nyquist
+    h_n = np.sinc(w_c_norm * n)
     
-    # Ventana Blackman para minimizar lóbulos laterales
+    # Ventana Blackman para minimizar lóbulos laterales (Gibbs Phenomenon)
     ventana = np.blackman(len(n))
-    h = h * ventana
+    h_n = h_n * ventana
     
-    # NORMALIZACIÓN DE ENERGÍA CRÍTICA
-    # La suma de coeficientes debe ser 1.0 para ganancia unitaria DC
-    suma = np.sum(h)
+    # Normalización de Energía: Suma(h[n]) = 1 para ganancia unitaria en DC
+    suma = np.sum(h_n)
     if suma != 0:
-        h /= suma
+        h_n /= suma
         
-    return h
+    return h_n
 
-def cambiar_tasa_muestreo(datos, fs_original, factor_m, factor_l):
+def conversion_tasa_muestreo(x_n, fs_original, M, L):
     """
-    Algoritmo de Remuestreo Polifásico Manual.
+    Implementación del Sistema de Conversión de Tasa de Muestreo.
+    Referencia: Oppenheim Cap. 7 (Muestreo).
+    
+    Bloques:
+    1. Expansor (Upsampling): x_e[n] (Inserta L-1 ceros).
+    2. Filtro Paso Bajo h[n]: Interpolación y Anti-Solapamiento (Anti-Aliasing).
+    3. Diezmador (Downsampling): x_d[n] (Toma 1 muestra cada M).
     """
-    # Bypass 1:1
-    if factor_m == 1 and factor_l == 1:
-        return datos, fs_original
+    # Caso trivial (Bypass)
+    if M == 1 and L == 1:
+        return x_n, fs_original
 
-    # 1. Expansión (Upsampling)
-    # Insertar L-1 ceros entre muestras
-    N = len(datos)
-    datos_expandidos = np.zeros(N * factor_l, dtype=datos.dtype)
-    datos_expandidos[::factor_l] = datos
+    # 1. EXPANSIÓN (Upsampling) por factor L
+    N = len(x_n)
+    x_expandida = np.zeros(N * L, dtype=x_n.dtype)
+    x_expandida[::L] = x_n # x_e[n] = x[n/L] si n es multiplo de L
     
-    # 2. Diseño del Filtro (Lógica Robusta)
-    # Trabajamos en el dominio de la señal expandida (fs' = fs * L).
-    # Necesitamos cortar las imágenes espectrales generadas por L 
-    # Y prevenir el aliasing que generará M.
-    # El corte debe ser: 1 / max(L, M) relativo a Nyquist.
-    corte_normalizado = 1.0 / max(factor_l, factor_m)
+    # 2. FILTRADO (Convolución Discreta)
+    # Frecuencia de corte crítica: min(pi/L, pi/M) para evitar imágenes y aliasing.
+    # Normalizamos respecto a Nyquist (1.0).
+    w_corte_norm = 1.0 / max(L, M)
     
-    # Longitud del filtro dinámica: Más taps si el corte es estrecho
-    num_taps = 40 * max(factor_l, factor_m) + 1
+    # Longitud del filtro (Taps) proporcional a la exigencia del corte
+    num_taps = 40 * max(L, M) + 1
+    h_n = generar_respuesta_impulso_sinc(w_corte_norm, num_taps)
     
-    # Generar Kernel
-    filtro = generar_filtro_sinc_normalizado(corte_normalizado, num_taps)
+    # Compensación de ganancia por expansión (Conservación de energía)
+    h_n *= L
     
-    # Corrección de Ganancia:
-    # Al expandir por L, la energía se divide. Multiplicamos el filtro por L.
-    filtro *= factor_l
+    # y[n] = x[n] * h[n] (Suma de Convolución)
+    # Usamos 'same' para mantener la referencia temporal centrada
+    x_filtrada = np.convolve(x_expandida, h_n, mode='same')
     
-    # 3. Filtrado (Convolución)
-    # 'same' centra la convolución, vital para no desfasar la señal al diezmar
-    datos_filtrados = np.convolve(datos_expandidos, filtro, mode='same')
+    # 3. DIEZMADO (Downsampling) por factor M
+    # y[n] = x_f[n * M]
+    x_final = x_filtrada[::M]
     
-    # 4. Decimación (Downsampling)
-    datos_finales = datos_filtrados[::factor_m]
-    
-    fs_final = int(fs_original * factor_l / factor_m)
-    return datos_finales, fs_final
+    fs_nueva = int(fs_original * L / M)
+    return x_final, fs_nueva
 
 # ==========================================
-# 4. ECUALIZADOR (ECUACIÓN EN DIFERENCIAS)
+# FILTRADO IIR Y SISTEMAS LTI (CAP. 5 OPPENHEIM)
 # ==========================================
 
-def calcular_coefs_eq(fc, fs, gain_db, Q=1.0):
+def disenar_coeficientes_diferencias(fc, fs, ganancia_db):
+    """
+    Calcula los coeficientes {bk} y {ak} de la Ecuación en Diferencias
+    para un filtro de segundo orden (Biquad) tipo 'Peaking EQ'.
+    
+    Se basa en la Transformada Bilineal para mapear el plano S al plano Z.
+    """
+    # Frecuencia angular discreta w0
     w0 = 2 * np.pi * fc / fs
-    alpha = np.sin(w0) / (2 * Q)
-    A = 10 ** (gain_db / 40.0)
+    alpha = np.sin(w0) / 2.0  # Q fijo en 1.0 para ancho de banda musical
+    A = 10 ** (ganancia_db / 40.0)
     
+    # Coeficientes del numerador (Feedforward) y denominador (Feedback)
     b0 = 1 + alpha * A
     b1 = -2 * np.cos(w0)
     b2 = 1 - alpha * A
@@ -144,56 +196,59 @@ def calcular_coefs_eq(fc, fs, gain_db, Q=1.0):
     a1 = -2 * np.cos(w0)
     a2 = 1 - alpha / A
     
-    return np.array([b0, b1, b2])/a0, np.array([a0, a1, a2])/a0
+    # Normalización estándar (a0 = 1)
+    b = np.array([b0, b1, b2]) / a0
+    a = np.array([a0, a1, a2]) / a0
+    
+    return b, a
 
-def filtro_iir_manual(x, b, a):
-    # Implementación vectorizada básica (Direct Form II Transposed simplificada)
-    # Usamos lfilter de numpy SOLO como motor matemático de la ec. diferencias
-    # para evitar que el bucle for de Python tarde 10 segundos por slider.
-    # Matemáticamente es idéntico a: y[n] = b0*x[n] ... - a1*y[n-1]
-    from scipy.signal import lfilter
-    return lfilter(b, a, x)
+def aplicar_ecuacion_diferencias(x_n, b, a):
+    """
+    Implementa el sistema LTI discreto definido por la Ecuación en Diferencias
+    Lineal de Coeficientes Constantes:
+    
+    sum(ak * y[n-k]) = sum(bk * x[n-k])
+    
+    Nota: Se utiliza 'lfilter' como motor computacional eficiente de esta ecuación.
+    """
+    return signal.lfilter(b, a, x_n)
 
-def aplicar_ecualizador(datos, fs, ganancias):
-    # Bypass si todo está en 0
-    if all(abs(g) < 0.1 for g in ganancias.values()):
-        return datos
+def sistema_ecualizador(x_n, fs, ganancias_bandas):
+    """
+    Sistema LTI compuesto por múltiples filtros en serie (cascada).
+    Implementa protección contra violación del Teorema de Nyquist.
+    """
+    # Bypass si no hay ganancia (Respuesta plana)
+    if all(abs(g) < 0.1 for g in ganancias_bandas.values()):
+        return x_n
 
-    bandas = {
+    frecuencias_centrales = {
         "Sub-Bass": 40, "Bass": 150, "Low Mids": 1000,
         "High Mids": 3000, "Presence": 5000, "Brilliance": 10000
     }
     
-    salida = datos.copy()
-    
-    # Límite de Nyquist actual (Frecuencia máxima posible)
+    y_n = x_n.copy()
     limite_nyquist = fs / 2.0
     
-    for nombre, ganancia in ganancias.items():
+    for banda, ganancia in ganancias_bandas.items():
         if abs(ganancia) > 0.1:
-            fc_original = bandas.get(nombre, 1000)
+            fc_teorica = frecuencias_centrales.get(banda, 1000)
             
-            # --- CORRECCIÓN INTELIGENTE DE BANDAS ---
-            # Si la frecuencia central está fuera, no apagamos la banda.
-            # En su lugar, la "empujamos" hacia adentro del límite válido.
-            
-            # Margen de seguridad (90% de Nyquist) para estabilidad IIR
+            # --- PROTECCIÓN DE NYQUIST ---
+            # Si fc >= fs/2, el filtro es irrealizable digitalmente.
+            # Ajustamos fc para que quede dentro del círculo unitario (estabilidad).
             techo_seguro = limite_nyquist * 0.90
             
-            if fc_original >= techo_seguro:
-                # Si la banda original es 10kHz pero solo llegamos a 8kHz,
-                # ajustamos el filtro a ~7.2kHz para controlar los agudos restantes.
+            if fc_teorica >= techo_seguro:
+                # Ajuste dinámico de frecuencia ("Frequency Clamping")
                 fc_efectiva = techo_seguro
             else:
-                fc_efectiva = fc_original
+                fc_efectiva = fc_teorica
             
-            # Caso extremo: Si incluso ajustando, la frecuencia es ridículamente baja
-            # (ej. intentar meter Brilliance en un audio de 100Hz), ahí sí ignoramos.
-            if fc_efectiva < 10: 
-                continue
-
-            # Calculamos coeficientes con la frecuencia ajustada
-            b, a = calcular_coefs_eq(fc_efectiva, fs, ganancia)
-            salida = filtro_iir_manual(salida, b, a)
+            # Si tras el ajuste la frecuencia es válida (> 10 Hz), aplicamos el filtro
+            if fc_efectiva > 10:
+                b, a = disenar_coeficientes_diferencias(fc_efectiva, fs, ganancia)
+                y_n = aplicar_ecuacion_diferencias(y_n, b, a)
             
-    return np.clip(salida, -1.0, 1.0)
+    # Saturación suave para evitar overflow numérico
+    return np.clip(y_n, -1.0, 1.0)
