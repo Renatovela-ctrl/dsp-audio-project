@@ -104,7 +104,6 @@ x_n = st.session_state.senal_x
 fs_entrada = st.session_state.fs
 
 st.sidebar.markdown("---")
-# Loop desactivado por defecto
 usar_loop = st.sidebar.checkbox("Análisis por Ventana (15s)", value=False, help="Analizar solo un segmento central.")
 if usar_loop:
     centro = len(x_n) // 2
@@ -129,17 +128,15 @@ ganancias = {}
 for i, (key, rango) in enumerate(zip(llaves, rangos)):
     ganancias[key] = st.sidebar.slider(f"{key} ({rango})", -15, 15, 0, key=f"g_{i}")
 
-# --- PROCESAMIENTO EN CASCADA (x -> y -> z) ---
+# --- PROCESAMIENTO EN CASCADA ---
 with st.spinner("Procesando señal..."):
     # Etapa 1: SRC (Genera la señal intermedia 'y')
-    # Nota interna: y_intermedia es lo que sale del SRC
     y_intermedia, fs_salida = conversion_tasa_muestreo(x_trabajo, fs_entrada, M, L)
     
     # Etapa 2: EQ (Genera la señal final 'z')
-    # Nota interna: z_final es lo que sale del EQ
     z_final = sistema_ecualizador(y_intermedia, fs_salida, ganancias)
 
-# --- VISUALIZACIÓN MULTI-ETAPA ---
+# --- VISUALIZACIÓN ---
 st.divider()
 tipo_grafica = st.radio("Modo de Análisis:", ["Espectral y Temporal", "Secuencia Discreta (Stem)"], horizontal=True)
 
@@ -152,55 +149,40 @@ if tipo_grafica == "Espectral y Temporal":
     tab1, tab2 = st.tabs(["Dominio del Tiempo", "Dominio de la Frecuencia"])
     
     with tab1:
-        # Ejes de tiempo
         t_in = np.linspace(0, len(x_trabajo)/fs_entrada, len(x_trabajo))
-        t_out = np.linspace(0, len(z_final)/fs_salida, len(z_final)) # y_intermedia y z_final comparten eje
+        t_out = np.linspace(0, len(z_final)/fs_salida, len(z_final))
         
         fig_t = go.Figure()
-        
-        # 1. Entrada Original (x)
+        # 1. Entrada x[n]
         fig_t.add_trace(go.Scatter(x=submuestreo_visual(t_in), y=submuestreo_visual(x_trabajo), 
                                    name="x[n] (Original)", line=dict(color='gray', width=1), opacity=0.4))
-        
-        # 2. Intermedia (y)
+        # 2. Intermedia y[n]
         fig_t.add_trace(go.Scatter(x=submuestreo_visual(t_out), y=submuestreo_visual(y_intermedia), 
-                                   name="y[n] (Resampleada)", line=dict(color='#FFD700', width=1), opacity=0.8)) # Dorado
-        
-        # 3. Salida Final (z)
+                                   name="y[n] (Resampleada)", line=dict(color='#FFD700', width=1), opacity=0.8))
+        # 3. Salida z[n]
         fig_t.add_trace(go.Scatter(x=submuestreo_visual(t_out), y=submuestreo_visual(z_final), 
-                                   name="z[n] (Ecualizada)", line=dict(color='#00ff00', width=1.5))) # Verde
+                                   name="z[n] (Final)", line=dict(color='#00ff00', width=1.5)))
         
         fig_t.update_layout(template="plotly_dark", height=350, title="Evolución Temporal de la Señal",
                             xaxis_title="Tiempo (s)", uirevision=st.session_state.id_sesion)
         st.plotly_chart(fig_t, use_container_width=True)
 
     with tab2:
-        # Cálculo de Espectros
         limit_pts = 100000
         f_in, mag_in = calcular_espectro_magnitud(x_trabajo[:limit_pts], fs_entrada)
         f_src, mag_src = calcular_espectro_magnitud(y_intermedia[:limit_pts], fs_salida)
         f_out, mag_out = calcular_espectro_magnitud(z_final[:limit_pts], fs_salida)
         
-        # Filtros visuales
-        mask_in = f_in > 0.5
-        mask_src = f_src > 0.5
-        mask_out = f_out > 0.5
-        
+        mask_in = f_in > 0.5; mask_src = f_src > 0.5; mask_out = f_out > 0.5
         db_in = 20*np.log10(mag_in[mask_in] + 1e-12)
         db_src = 20*np.log10(mag_src[mask_src] + 1e-12)
         db_out = 20*np.log10(mag_out[mask_out] + 1e-12)
         
         fig_f = go.Figure()
-        
-        # 1. Entrada (x)
         fig_f.add_trace(go.Scatter(x=submuestreo_visual(f_in[mask_in]) * factor_escala, y=submuestreo_visual(db_in), 
                                    name="|X| (Original)", line=dict(color='gray'), opacity=0.5))
-        
-        # 2. Intermedia (y)
         fig_f.add_trace(go.Scatter(x=submuestreo_visual(f_src[mask_src]) * factor_escala, y=submuestreo_visual(db_src), 
                                    name="|Y| (Resampleada)", line=dict(color='#FFD700', width=1.5), opacity=0.8))
-        
-        # 3. Salida (z)
         fig_f.add_trace(go.Scatter(x=submuestreo_visual(f_out[mask_out]) * factor_escala, y=submuestreo_visual(db_out), 
                                    name="|Z| (Ecualizada)", fill='tozeroy', line=dict(color='cyan', width=1.5)))
         
@@ -215,38 +197,57 @@ if tipo_grafica == "Espectral y Temporal":
         st.plotly_chart(fig_f, use_container_width=True)
 
 else:
-    # MODO TEÓRICO
-    st.markdown("#### 🔬 Representación de Secuencias y Espectro Angular")
+    # MODO TEÓRICO: 3 ETAPAS
+    st.markdown("#### 🔬 Secuencias Discretas (Zoom 40 muestras)")
     
-    # --- 1. STEM PLOT (TIEMPO) ---
     muestras = 40
     c = len(x_trabajo) // 2
-    x_s = x_trabajo[c:c+muestras]
     
+    # 1. Entrada x[n]
+    x_s = x_trabajo[c : c+muestras]
+    
+    # Índices equivalentes para salida
     ratio = fs_salida / fs_entrada
     c_out = int(c * ratio)
     m_out = int(muestras * ratio)
     
-    # Mostramos Entrada vs Salida Final (lo más relevante en discreto)
+    # 2. Intermedia y[n]
+    y_s = y_intermedia[c_out : c_out + m_out]
+    
+    # 3. Salida z[n]
     z_s = z_final[c_out : c_out + m_out]
 
-    fig_stem, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 5), constrained_layout=True)
+    # Crear 3 subplots verticales
+    fig_stem, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 8), constrained_layout=True)
     
+    # Normalización para apreciar forma de onda
     norm_x = np.max(np.abs(x_s)) if np.max(np.abs(x_s)) > 0 else 1
+    norm_y = np.max(np.abs(y_s)) if np.max(np.abs(y_s)) > 0 else 1
     norm_z = np.max(np.abs(z_s)) if np.max(np.abs(z_s)) > 0 else 1
 
+    # Plot x
     ax1.stem(range(len(x_s)), x_s/norm_x, linefmt='k-', markerfmt='ko', basefmt='k-')
     ax1.set_title(r"Entrada $x[n]$", fontsize=10)
+    ax1.set_ylabel("Amplitud Norm.")
     ax1.grid(alpha=0.3)
 
-    eje_salida = np.linspace(0, len(x_s), len(z_s))
-    ax2.stem(eje_salida, z_s/norm_z, linefmt='r-', markerfmt='ro', basefmt='k-')
-    ax2.set_title(r"Salida Final $z[n]$", fontsize=10)
+    # Plot y
+    eje_salida = np.linspace(0, len(x_s), len(y_s))
+    ax2.stem(eje_salida, y_s/norm_y, linefmt='y-', markerfmt='yo', basefmt='k-') # Amarillo/Naranja
+    ax2.set_title(r"Intermedia $y[n]$ (SRC: Resampleada)", fontsize=10)
+    ax2.set_ylabel("Amplitud Norm.")
     ax2.grid(alpha=0.3)
+
+    # Plot z
+    ax3.stem(eje_salida, z_s/norm_z, linefmt='g-', markerfmt='go', basefmt='k-') # Verde
+    ax3.set_title(r"Salida Final $z[n]$ (EQ: Ecualizada)", fontsize=10)
+    ax3.set_xlabel("n (Muestras relativas)")
+    ax3.set_ylabel("Amplitud Norm.")
+    ax3.grid(alpha=0.3)
     
     st.pyplot(fig_stem)
 
-    # --- 2. ESPECTRO ANGULAR ---
+    # --- ESPECTRO ANGULAR ---
     st.markdown("#### 📐 Espectro Angular ($-\pi$ a $\pi$)")
     
     N_fft = 1024
@@ -256,30 +257,29 @@ else:
     seg_in = x_trabajo[start_idx : end_idx]
     if len(seg_in) < N_fft: seg_in = np.pad(seg_in, (0, N_fft - len(seg_in)))
     
-    # Segmentos de salida
     start_out = int(start_idx * ratio)
     len_out = int(N_fft * ratio)
     if start_out + len_out > len(z_final): start_out = max(0, len(z_final) - len_out)
     
-    seg_out = z_final[start_out : start_out + len_out]
+    seg_z = z_final[start_out : start_out + len_out]
     
     W_in = np.fft.fftshift(np.fft.fft(seg_in))
-    W_out = np.fft.fftshift(np.fft.fft(seg_out))
+    W_z = np.fft.fftshift(np.fft.fft(seg_z))
     
     w_axis_in = np.linspace(-np.pi, np.pi, len(W_in))
-    w_axis_out = np.linspace(-np.pi, np.pi, len(W_out))
+    w_axis_out = np.linspace(-np.pi, np.pi, len(W_z))
     
-    fig_w, ax3 = plt.subplots(figsize=(10, 3), constrained_layout=True)
-    ax3.plot(w_axis_in, 20*np.log10(np.abs(W_in)+1e-9), 'k--', alpha=0.4, label='x (Original)')
-    ax3.plot(w_axis_out, 20*np.log10(np.abs(W_out)+1e-9), 'c-', label='z (Ecualizada)')
+    fig_w, ax_w = plt.subplots(figsize=(10, 3), constrained_layout=True)
+    ax_w.plot(w_axis_in, 20*np.log10(np.abs(W_in)+1e-9), 'k--', alpha=0.4, label='x[n]')
+    ax_w.plot(w_axis_out, 20*np.log10(np.abs(W_z)+1e-9), 'g-', label='z[n]')
     
-    ax3.set_xlim(-np.pi, np.pi)
-    ax3.set_xlabel(r"Frecuencia $\omega$ (rad)")
-    ax3.set_xticks([-np.pi, 0, np.pi])
-    ax3.set_xticklabels([r'$-\pi$', '0', r'$\pi$'])
-    ax3.set_ylabel("Magnitud (dB)")
-    ax3.legend(loc='upper right')
-    ax3.grid(alpha=0.3)
+    ax_w.set_xlim(-np.pi, np.pi)
+    ax_w.set_xlabel(r"Frecuencia $\omega$ (rad)")
+    ax_w.set_xticks([-np.pi, 0, np.pi])
+    ax_w.set_xticklabels([r'$-\pi$', '0', r'$\pi$'])
+    ax_w.set_ylabel("Magnitud (dB)")
+    ax_w.legend(loc='upper right')
+    ax_w.grid(alpha=0.3)
     
     st.pyplot(fig_w)
 
