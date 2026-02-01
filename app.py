@@ -178,7 +178,7 @@ if viz_mode == "🛠️ Análisis Completo":
         fi, mi = compute_fft(work_data[:limit], fs_in)
         fo, mo = compute_fft(processed[:limit], fs_out)
         
-        # Filtro de DC (0 Hz)
+        # Filtro DC
         mask_i = fi > 0.5 
         mask_o = fo > 0.5
         fi, mi = fi[mask_i], mi[mask_i]
@@ -193,38 +193,40 @@ if viz_mode == "🛠️ Análisis Completo":
         vi_m = safe_downsample(mi_db)
         vo_f = safe_downsample(fo) * x_mult
         vo_m = safe_downsample(mo_db)
+        
+        # Calcular rangos Y dinámicos para dibujar las líneas verticales completas
+        # Esto asegura que las líneas cubran todo el gráfico verticalmente
+        y_min_val = min(np.min(vi_m), np.min(vo_m)) - 5
+        y_max_val = max(np.max(vi_m), np.max(vo_m)) + 5
 
         fig_f = go.Figure()
-        fig_f.add_trace(go.Scatter(x=vi_f, y=vi_m, name="In", line=dict(color='gray')))
-        fig_f.add_trace(go.Scatter(x=vo_f, y=vo_m, name="Out", fill='tozeroy', line=dict(color='cyan')))
+        fig_f.add_trace(go.Scatter(x=vi_f, y=vi_m, name="Original", line=dict(color='gray'), opacity=0.6))
+        fig_f.add_trace(go.Scatter(x=vo_f, y=vo_m, name="Procesada", fill='tozeroy', line=dict(color='cyan')))
         
-        # --- LÍNEAS VERTICALES CON ETIQUETAS ROTADAS ---
+        # --- LÍNEAS VERTICALES INTELIGENTES ---
         boundaries = [60, 250, 2000, 4000, 6000]
-        line_color = "#FF5500" # Naranja
+        line_color = "#FF5500" # Naranja brillante
         
         for b in boundaries:
             pos = b * x_mult
-            # Línea vertical
-            fig_f.add_vline(x=pos, line_dash="dot", line_color=line_color, opacity=0.8)
-            
-            # Etiqueta VERTICAL (-90 grados)
-            # Esto evita que se extienda a la derecha
-            if f_unit == "Hz":
-                fig_f.add_annotation(
-                    x=pos, 
-                    y=0.95, yref="paper", # Parte superior
-                    text=f"{b}", 
-                    showarrow=False, 
-                    font=dict(color=line_color, size=10),
-                    textangle=-90,    # ROTACIÓN CLAVE
-                    xanchor="left"    # Pegado a la línea
-                )
+            # Dibujamos como TRACES para que salgan en la Leyenda y tengan Hover
+            # pero ocultamos el legendgroup para que no ensucien la leyenda si son muchas,
+            # o las dejamos para que el usuario sepa qué es.
+            fig_f.add_trace(go.Scatter(
+                x=[pos, pos], 
+                y=[y_min_val, y_max_val], # Línea vertical completa
+                mode="lines",
+                name=f"{b} Hz" if f_unit == "Hz" else f"{int(b)} rad/s",
+                line=dict(color=line_color, width=1.5, dash="dash"),
+                hoverinfo="name" # Solo muestra el nombre al pasar el mouse
+            ))
 
         fig_f.update_layout(
-            template="plotly_dark", height=300, margin=dict(l=10, r=10, t=30, b=10),
+            template="plotly_dark", height=350, margin=dict(l=10, r=10, t=30, b=10),
             title=f"Espectro ({f_unit})", 
             xaxis=dict(type="log", title=f"Frecuencia ({f_unit})"),
             yaxis=dict(title="Magnitud (dB)"), 
+            legend=dict(x=1, y=1), # Leyenda a la derecha
             uirevision=st.session_state.file_id
         )
         st.plotly_chart(fig_f, use_container_width=True)
