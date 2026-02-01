@@ -152,7 +152,7 @@ if tipo_grafica == "Espectral y Temporal":
         fig_t.add_trace(go.Scatter(x=submuestreo_visual(t_in), y=submuestreo_visual(x_trabajo), 
                                    name="x[n]", line=dict(color='gray', width=1), opacity=0.5))
         fig_t.add_trace(go.Scatter(x=submuestreo_visual(t_out), y=submuestreo_visual(y_n), 
-                                   name="y[n]", line=dict(color='#00ff00', width=1.5)))
+                                   name="z[n]", line=dict(color='#00ff00', width=1.5)))
         fig_t.update_layout(template="plotly_dark", height=300, title="Señales en el Tiempo",
                             xaxis_title="Tiempo (s)", uirevision=st.session_state.id_sesion)
         st.plotly_chart(fig_t, use_container_width=True)
@@ -169,7 +169,7 @@ if tipo_grafica == "Espectral y Temporal":
         fig_f.add_trace(go.Scatter(x=submuestreo_visual(f_in[mask_in]) * factor_escala, y=submuestreo_visual(db_in), 
                                    name="|X(jw)|", line=dict(color='gray'), opacity=0.6))
         fig_f.add_trace(go.Scatter(x=submuestreo_visual(f_out[mask_out]) * factor_escala, y=submuestreo_visual(db_out), 
-                                   name="|Y(jw)|", fill='tozeroy', line=dict(color='cyan')))
+                                   name="|Z(jw)|", fill='tozeroy', line=dict(color='cyan')))
         
         bandas_hz = [60, 250, 2000, 4000, 6000]
         for b_hz in bandas_hz:
