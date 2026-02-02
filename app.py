@@ -281,7 +281,8 @@ else:
     
     seg_y = y_intermedia[start_out : start_out + len_out]
     seg_z = z_final[start_out : start_out + len_out]
-    
+
+    # Uso de np.fft para optimizar la interfaz
     W_x = np.fft.fftshift(np.fft.fft(seg_in))
     W_y = np.fft.fftshift(np.fft.fft(seg_y))
     W_z = np.fft.fftshift(np.fft.fft(seg_z))
