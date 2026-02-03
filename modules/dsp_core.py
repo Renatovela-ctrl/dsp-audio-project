@@ -186,7 +186,7 @@ def disenar_coeficientes_diferencias(fc, fs, ganancia_db):
     # Frecuencia angular discreta w0
     w0 = 2 * np.pi * fc / fs
     alpha = np.sin(w0) / 2.0  # Q fijo en 1.0 para ancho de banda musical
-    A = 10 ** (ganancia_db / 10.0)
+    A = 10 ** (ganancia_db / 40.0)
     
     # Coeficientes del numerador (Feedforward) y denominador (Feedback)
     b0 = 1 + alpha * A
