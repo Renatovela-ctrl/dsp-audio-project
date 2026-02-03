@@ -62,11 +62,40 @@ def callback_carga_ejemplo():
 # --- 4. UTILIDADES ---
 def generar_reproductor_html(audio_buffer, fs, id_unico):
     b64 = base64.b64encode(audio_buffer.read()).decode()
+    
+    # Generamos IDs únicos para que el navegador sepa qué guardar
+    html_id = f"audio_{id_unico}"
+    storage_key = f"time_{id_unico}"
+    
     html = f"""
     <div class="dsp-monitor">Fs_salida: {fs} Hz</div>
-    <audio controls autoplay style="width:100%;">
+    <audio id="{html_id}" controls autoplay style="width:100%;">
         <source src="data:audio/wav;base64,{b64}" type="audio/wav">
     </audio>
+    <script>
+        (function() {{
+            var a = document.getElementById('{html_id}');
+            var k = '{storage_key}';
+            
+            // 1. Al cargar el audio, buscar si había un tiempo guardado
+            a.onloadedmetadata = function() {{
+                var s = sessionStorage.getItem(k);
+                if(s && s!=="null") {{
+                    var t = parseFloat(s);
+                    // Solo saltar si el tiempo es válido
+                    if(!isNaN(t) && t < a.duration) {{
+                        a.currentTime = t;
+                    }}
+                }}
+                a.play().catch(e => console.log("Autoplay bloqueado por navegador"));
+            }};
+            
+            // 2. Guardar el tiempo actual constantemente mientras suena
+            a.ontimeupdate = function() {{ 
+                sessionStorage.setItem(k, a.currentTime); 
+            }};
+        }})();
+    </script>
     """
     st.components.v1.html(html, height=85)
 
