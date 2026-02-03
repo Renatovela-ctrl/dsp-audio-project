@@ -173,8 +173,9 @@ tipo_grafica = st.radio("Modo de Análisis:", ["Espectral y Temporal", "Secuenci
 if tipo_grafica == "Espectral y Temporal":
     col_eje, _ = st.columns([1, 4])
     with col_eje:
-        unidades = st.radio("Unidades:", ["Hz (f)", "rad/s (ω)"], horizontal=True)
-        factor_escala = 2*np.pi if "rad" in unidades else 1.0
+        # Ahora diferenciamos claramente entre Hz y Frecuencia Normalizada
+        modo_frec = st.radio("Unidades:", ["Hz (Frecuencia Real)", "rad/s (Normalizada ω)"], horizontal=True)
+        usar_rads = "rad" in modo_frec
 
     tab1, tab2 = st.tabs(["Dominio del Tiempo", "Dominio de la Frecuencia"])
     
@@ -208,21 +209,44 @@ if tipo_grafica == "Espectral y Temporal":
         db_src = 20*np.log10(mag_src[mask_src] + 1e-12)
         db_out = 20*np.log10(mag_out[mask_out] + 1e-12)
         
+        # --- CÁLCULO DEL EJE X (NORMALIZACIÓN CORRECTA) ---
+        if usar_rads:
+            # Normalización: w = 2*pi * f / fs
+            # Nyquist (fs/2) se convierte en PI.
+            x_in = f_in[mask_in] * (2 * np.pi / fs_entrada)
+            x_src = f_src[mask_src] * (2 * np.pi / fs_salida)
+            x_out = f_out[mask_out] * (2 * np.pi / fs_salida)
+            xlabel = "Frecuencia Normalizada (rad/muestra) [π = Nyquist]"
+        else:
+            x_in = f_in[mask_in]
+            x_src = f_src[mask_src]
+            x_out = f_out[mask_out]
+            xlabel = "Frecuencia (Hz)"
+
         fig_f = go.Figure()
-        fig_f.add_trace(go.Scatter(x=submuestreo_visual(f_in[mask_in]) * factor_escala, y=submuestreo_visual(db_in), 
+        fig_f.add_trace(go.Scatter(x=submuestreo_visual(x_in), y=submuestreo_visual(db_in), 
                                    name="|X| (Original)", line=dict(color='gray'), opacity=0.5))
-        fig_f.add_trace(go.Scatter(x=submuestreo_visual(f_src[mask_src]) * factor_escala, y=submuestreo_visual(db_src), 
+        fig_f.add_trace(go.Scatter(x=submuestreo_visual(x_src), y=submuestreo_visual(db_src), 
                                    name="|Y| (Resampleada)", line=dict(color='#FFD700', width=1.5), opacity=0.8))
-        fig_f.add_trace(go.Scatter(x=submuestreo_visual(f_out[mask_out]) * factor_escala, y=submuestreo_visual(db_out), 
+        fig_f.add_trace(go.Scatter(x=submuestreo_visual(x_out), y=submuestreo_visual(db_out), 
                                    name="|Z| (Ecualizada)", fill='tozeroy', line=dict(color='cyan', width=1.5)))
         
+        # Líneas verticales de bandas (Ajustadas a la nueva escala)
         bandas_hz = [60, 250, 2000, 4000, 6000]
         for b_hz in bandas_hz:
-            pos = b_hz * factor_escala
-            fig_f.add_vline(x=pos, line_dash="dash", line_color="#FF5500", opacity=0.7)
+            if usar_rads:
+                # Las bandas se muestran respecto a la salida (donde aplicamos el EQ)
+                pos = b_hz * (2 * np.pi / fs_salida)
+            else:
+                pos = b_hz
+            
+            # Solo dibujamos si está dentro del rango visible (Nyquist)
+            max_limit = np.pi if usar_rads else fs_salida/2
+            if pos < max_limit:
+                fig_f.add_vline(x=pos, line_dash="dash", line_color="#FF5500", opacity=0.7)
 
         fig_f.update_layout(template="plotly_dark", height=350, title="Evolución Espectral (Cascada)",
-                            xaxis=dict(type="log", title=f"Frecuencia ({unidades.split()[0]})"),
+                            xaxis=dict(type="log", title=xlabel),
                             yaxis_title="Magnitud (dB)", uirevision=st.session_state.id_sesion)
         st.plotly_chart(fig_f, use_container_width=True)
 
@@ -231,73 +255,57 @@ else:
     st.markdown("#### 🔬 Secuencias Discretas (Zoom 40 muestras)")
     
     # --- SELECTOR DE INSTANTE ---
-    # Calculamos la duración total en segundos
     duracion_total = len(x_trabajo) / fs_entrada
     
-    # Slider para elegir el segundo exacto
     t_seleccionado = st.slider("Seleccionar Instante de Análisis (segundos)", 
                                min_value=0.0, 
                                max_value=duracion_total, 
-                               value=duracion_total/2.0, # Valor por defecto: Centro
+                               value=duracion_total/2.0,
                                step=0.01)
     
-    # Convertimos tiempo a índice de muestra (para x[n])
     c = int(t_seleccionado * fs_entrada)
-    
-    # Validar que no nos salgamos del array
     muestras = 40
-    if c + muestras > len(x_trabajo):
-        c = len(x_trabajo) - muestras
+    if c + muestras > len(x_trabajo): c = len(x_trabajo) - muestras
     
-    # 1. Entrada x[n]
+    # Sincronización de índices
     x_s = x_trabajo[c : c+muestras]
-    
-    # Índices equivalentes para salida (Sincronización de Tiempos)
     ratio = fs_salida / fs_entrada
     c_out = int(c * ratio)
     m_out = int(muestras * ratio)
     
-    # 2. Intermedia y[n]
     if c_out + m_out > len(y_intermedia): c_out = len(y_intermedia) - m_out
     y_s = y_intermedia[c_out : c_out + m_out]
-    
-    # 3. Salida z[n]
     z_s = z_final[c_out : c_out + m_out]
 
-    # Crear 3 subplots verticales
     fig_stem, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 8), constrained_layout=True)
     
     norm_x = np.max(np.abs(x_s)) if np.max(np.abs(x_s)) > 0 else 1
     norm_y = np.max(np.abs(y_s)) if np.max(np.abs(y_s)) > 0 else 1
     norm_z = np.max(np.abs(z_s)) if np.max(np.abs(z_s)) > 0 else 1
 
-    # Plot x
     ax1.stem(range(len(x_s)), x_s/norm_x, linefmt='k-', markerfmt='ko', basefmt='k-')
     ax1.set_title(r"Entrada $x[n]$ (t = {:.2f}s)".format(t_seleccionado), fontsize=10)
-    ax1.set_ylabel("Amplitud Norm.")
+    ax1.set_ylabel("Amp. Norm.")
     ax1.grid(alpha=0.3)
 
-    # Plot y
     eje_salida = np.linspace(0, len(x_s), len(y_s))
     ax2.stem(eje_salida, y_s/norm_y, linefmt='y-', markerfmt='yo', basefmt='k-') 
-    ax2.set_title(r"Intermedia $y[n]$ (SRC: Resampleada)", fontsize=10)
-    ax2.set_ylabel("Amplitud Norm.")
+    ax2.set_title(r"Intermedia $y[n]$ (SRC)", fontsize=10)
+    ax2.set_ylabel("Amp. Norm.")
     ax2.grid(alpha=0.3)
 
-    # Plot z
     ax3.stem(eje_salida, z_s/norm_z, linefmt='g-', markerfmt='go', basefmt='k-') 
-    ax3.set_title(r"Salida Final $z[n]$ (EQ: Ecualizada)", fontsize=10)
+    ax3.set_title(r"Salida $z[n]$ (EQ)", fontsize=10)
     ax3.set_xlabel("n (Muestras relativas)")
-    ax3.set_ylabel("Amplitud Norm.")
+    ax3.set_ylabel("Amp. Norm.")
     ax3.grid(alpha=0.3)
     
     st.pyplot(fig_stem)
 
-    # --- ESPECTRO ANGULAR (X, Y, Z) ---
+    # --- ESPECTRO ANGULAR (-pi a pi) ---
     st.markdown("#### 📐 Espectro Angular ($-\pi$ a $\pi$)")
     
     N_fft = 1024
-    # Centramos la FFT en el instante seleccionado por el usuario
     start_idx = max(0, c - N_fft // 2)
     end_idx = min(len(x_trabajo), start_idx + N_fft)
     
@@ -311,7 +319,6 @@ else:
     seg_y = y_intermedia[start_out : start_out + len_out]
     seg_z = z_final[start_out : start_out + len_out]
 
-    # Uso de np.fft para optimizar la interfaz
     W_x = np.fft.fftshift(np.fft.fft(seg_in))
     W_y = np.fft.fftshift(np.fft.fft(seg_y))
     W_z = np.fft.fftshift(np.fft.fft(seg_z))
@@ -326,7 +333,7 @@ else:
     ax_w.plot(w_axis_yz, 20*np.log10(np.abs(W_z)+1e-9), 'g-', alpha=0.8, label='z[n]')
     
     ax_w.set_xlim(-np.pi, np.pi)
-    ax_w.set_xlabel(r"Frecuencia $\omega$ (rad)")
+    ax_w.set_xlabel(r"Frecuencia Normalizada $\omega$ (rad/muestra)")
     ax_w.set_xticks([-np.pi, 0, np.pi])
     ax_w.set_xticklabels([r'$-\pi$', '0', r'$\pi$'])
     ax_w.set_ylabel("Magnitud (dB)")
